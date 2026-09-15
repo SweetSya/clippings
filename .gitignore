@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+.vite/
+
+# Storage binaries (keep directory structure)
+storage/uploads/*
+!storage/uploads/.gitkeep
+storage/audio/*
+!storage/audio/.gitkeep
+storage/transcripts/*
+!storage/transcripts/.gitkeep
+storage/subtitles/*
+!storage/subtitles/.gitkeep
+storage/thumbnails/*
+!storage/thumbnails/.gitkeep
+storage/exports/*
+!storage/exports/.gitkeep
+storage/tts/*
+!storage/tts/.gitkeep
+storage/credentials/*
+!storage/credentials/.gitkeep
+
+# Local databases & env
+*.db
+*.sqlite3
+.env
+.DS_Store

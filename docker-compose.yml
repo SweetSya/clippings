@@ -1,0 +1,54 @@
+services:
+  db-mysql:
+    image: mysql:8.0
+    container_name: autoshorts-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-autoshorts_root_secret}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-autoshorts}
+      MYSQL_USER: ${MYSQL_USER:-autoshorts}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-autoshorts_secure_password}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${MYSQL_USER:-autoshorts}", "-p${MYSQL_PASSWORD:-autoshorts_secure_password}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: autoshorts-backend
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./storage:/storage
+    ports:
+      - "8000:8000"
+    depends_on:
+      db-mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  web-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: autoshorts-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - api-backend
+
+volumes:
+  mysql_data:
+    driver: local
