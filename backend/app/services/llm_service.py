@@ -48,29 +48,185 @@ async def test_llm_connection(
     except Exception as e:
         return {"ok": False, "error": f"Gagal terhubung ke {url}: {str(e)}"}
 
-DEFAULT_SYSTEM_PROMPT = """Kamu adalah kurator video profesional kelas dunia yang ahli menyaring momen emas berviralitas tinggi untuk format vertikal TikTok, Instagram Reels, dan YouTube Shorts.
+from app.services.video_type_service import build_video_types_prompt_guide, get_video_type_by_id
+from app.services.ass_service import is_keyword
 
-PENDEKATAN KURASI DUA LAPIS (TWO-TIER CONTEXT):
+# Bobot composite hook scoring (Phase 2 — 1.3). Jumlah = 1.0.
+COMPOSITE_WEIGHT_LLM = 0.4
+COMPOSITE_WEIGHT_SPEECH_RATE = 0.2
+COMPOSITE_WEIGHT_KEYWORD = 0.2
+COMPOSITE_WEIGHT_HOOK_POSITION = 0.2
+# Window detik awal klip untuk penilaian kualitas hook + ambang densitas keyword.
+HOOK_WINDOW_SECONDS = 3.0
+KEYWORD_DENSITY_SATURATION = 0.15
+HOOK_POSITION_HIT_SCORE = 100.0
+HOOK_POSITION_MISS_SCORE = 30.0
+
+
+def _iter_clip_words(
+    segments: List[Dict[str, Any]], clip_start: float, clip_end: float
+):
+    """
+    Yield (kata, start_detik) untuk kata dalam window klip.
+    Pakai timestamps per-kata bila ada (whisper verbose), else sebar merata per segmen
+    (pola yang sama dengan fallback di pipeline.handle_render).
+    """
+    for seg in segments or []:
+        try:
+            seg_s = float(seg.get("start", 0.0))
+            seg_e = float(seg.get("end", seg_s))
+        except (TypeError, ValueError):
+            continue
+        if seg_e <= clip_start or seg_s >= clip_end:
+            continue
+        words = seg.get("words") or []
+        if words:
+            for w in words:
+                try:
+                    text = str(w.get("word", "")).strip()
+                    ws = float(w.get("start", seg_s))
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                if text and clip_start <= ws < clip_end:
+                    yield text, ws
+        else:
+            tokens = str(seg.get("text", "")).strip().split()
+            if not tokens:
+                continue
+            seg_d = max(0.1, seg_e - seg_s)
+            w_dur = seg_d / len(tokens)
+            for i, tok in enumerate(tokens):
+                ws = seg_s + i * w_dur
+                if clip_start <= ws < clip_end:
+                    yield tok, ws
+
+
+def compute_speech_rate_score(
+    clip_start: float, clip_end: float,
+    segments: List[Dict[str, Any]], avg_rate_wps: float,
+) -> tuple:
+    """
+    Return (skor 0-100, rate kata/detik klip).
+    Skor dari rasio rate klip vs rata-rata video: rasio 1.0 → 50, ≥1.4 → 100, ≤0.6 → 0.
+    Pure function (tanpa I/O).
+    """
+    dur = max(0.1, clip_end - clip_start)
+    words = list(_iter_clip_words(segments, clip_start, clip_end))
+    rate = len(words) / dur
+    if not words or avg_rate_wps <= 0:
+        return 50.0, round(rate, 3)
+    ratio = rate / avg_rate_wps
+    score = max(0.0, min(1.0, (ratio - 0.6) / 0.8)) * 100.0
+    return round(score, 1), round(rate, 3)
+
+
+def compute_keyword_density_score(
+    clip_start: float, clip_end: float, segments: List[Dict[str, Any]],
+) -> tuple:
+    """
+    Return (skor 0-100, densitas 0-1). Jenuh di KEYWORD_DENSITY_SATURATION.
+    Pure function (tanpa I/O).
+    """
+    words = [t for t, _ in _iter_clip_words(segments, clip_start, clip_end)]
+    if not words:
+        return 0.0, 0.0
+    hits = sum(1 for t in words if is_keyword(t))
+    density = hits / len(words)
+    score = min(1.0, density / KEYWORD_DENSITY_SATURATION) * 100.0
+    return round(score, 1), round(density, 4)
+
+
+def check_hook_position_score(
+    clip_start: float, segments: List[Dict[str, Any]],
+    window_seconds: float = HOOK_WINDOW_SECONDS,
+) -> float:
+    """
+    100 bila kata kunci muncul dalam `window_seconds` pertama klip, else MISS_SCORE.
+    Pure function (tanpa I/O).
+    """
+    for text, _ in _iter_clip_words(segments, clip_start, clip_start + window_seconds):
+        try:
+            if is_keyword(text):
+                return HOOK_POSITION_HIT_SCORE
+        except Exception:
+            continue
+    return HOOK_POSITION_MISS_SCORE
+
+
+def compute_composite_score(
+    llm_score: float, clip_start: float, clip_end: float,
+    segments: List[Dict[str, Any]], avg_rate_wps: float,
+) -> Dict[str, float]:
+    """
+    Gabung skor LLM (40%) + speech rate (20%) + keyword density (20%) + hook position (20%).
+    Return {composite_score, speech_rate, keyword_density}. Pure function (tanpa I/O).
+    """
+    try:
+        llm = max(0.0, min(100.0, float(llm_score)))
+    except (TypeError, ValueError):
+        llm = 50.0
+    speech_score, rate = compute_speech_rate_score(clip_start, clip_end, segments, avg_rate_wps)
+    kw_score, density = compute_keyword_density_score(clip_start, clip_end, segments)
+    hook_score = check_hook_position_score(clip_start, segments)
+    composite = (
+        llm * COMPOSITE_WEIGHT_LLM
+        + speech_score * COMPOSITE_WEIGHT_SPEECH_RATE
+        + kw_score * COMPOSITE_WEIGHT_KEYWORD
+        + hook_score * COMPOSITE_WEIGHT_HOOK_POSITION
+    )
+    return {
+        "composite_score": int(round(max(0, min(100, composite)))),
+        "speech_rate": rate,
+        "keyword_density": density,
+    }
+
+
+def _average_speech_rate(segments: List[Dict[str, Any]], video_duration: float) -> float:
+    total = sum(len(str(s.get("text", "")).strip().split()) for s in segments or [])
+    if total <= 0 or video_duration <= 0:
+        return 0.0
+    return total / video_duration
+
+class HighlightsList(list):
+    """
+    Subclass of list holding clip candidates while carrying video_type and recommended_preset_id metadata.
+    """
+    def __init__(self, iterable=None, video_type: str = "umum", recommended_preset_id: Optional[str] = None):
+        super().__init__(iterable or [])
+        self.video_type = video_type
+        self.recommended_preset_id = recommended_preset_id
+
+DEFAULT_SYSTEM_PROMPT = """Kamu adalah kurator & editor video profesional kelas dunia yang ahli menyaring momen emas berviralitas tinggi untuk format vertikal TikTok, Instagram Reels, dan YouTube Shorts.
+
+PENDEKATAN DUA LAPIS (TWO-TIER CONTEXT):
 1. KONTEKS BESAR (Macro-Context):
-   Pelajari Judul Video, Deskripsi Video, dan Gambaran Seluruh Teks Extracted. Pahami pesan sentral dan tujuan pembicara. Pastikan setiap klip yang dipilih memiliki RELEVANSI TEMATIK KUAT dengan topik utama video (eliminasi basa-basi pembuka, sponsor, atau obrolan santai yang tidak relevan).
+   - Pelajari Judul Video, Deskripsi Video (dari metadata yt-dlp/sumber), dan Gambaran Seluruh Transkrip.
+   - Pahami tema sentral, topik bahasan, dan klasifikasikan TIPE/GENRE video tersebut.
+   - Gunakan panduan kurasi khusus sesuai tipe video untuk menentukan bagian mana yang wajib diambil.
 
 2. KONTEKS KECIL (Micro-Context):
-   Gunakan segmen stempel waktu untuk memotong klip dengan durasi {min_dur} sampai {max_dur} detik secara presisi tanpa memotong kalimat di tengah-tengah.
+   - Gunakan segmen stempel waktu untuk memotong klip dengan durasi {min_dur} sampai {max_dur} detik secara presisi tanpa memotong kalimat di tengah-tengah.
    - Kalimat pembuka klip HARUS berupa 'Hook' kuat yang langsung memicu rasa penasaran penonton dalam 3 detik pertama.
    - Setiap klip harus menjadi gagasan yang utuh dan memuaskan penonton.
+   - Cari dan hasilkan hingga 10 klip terbaik (jika memang ada banyak momen menarik, hasilkan 5-10 klip; maksimal 10 klip).
 
 FORMAT JAWABAN:
-Balas HANYA dengan array JSON yang valid, TANPA format markdown block (tanpa ```json), TANPA salam pembuka atau penjelasan tambahan.
+Balas HANYA dengan JSON Object yang valid, TANPA format markdown block (tanpa ```json), TANPA salam pembuka atau penjelasan tambahan.
 
-[
-  {
-    "title": "Judul klip singkat, padat & memikat (maksimal 80 karakter)",
-    "start_time_seconds": 12.5,
-    "end_time_seconds": 58.2,
-    "hook_score": 92,
-    "virality_reason": "Pernyataan kontroversial di awal langsung memicu rasa ingin tahu penonton."
-  }
-]"""
+{
+  "video_type": "id_tipe_yang_sesuai",
+  "recommended_preset_id": "id_preset_sesuai_tipe",
+  "summary": "Ringkasan 1-2 kalimat konteks besar video",
+  "clips": [
+    {
+      "title": "Judul klip singkat, padat & memikat (maksimal 80 karakter)",
+      "start_time_seconds": 12.5,
+      "end_time_seconds": 58.2,
+      "hook_score": 92,
+      "virality_reason": "Pernyataan kontroversial di awal langsung memicu rasa ingin tahu penonton."
+    }
+  ]
+}"""
 
 def format_transcript_for_llm(segments: List[Dict[str, Any]], max_chars: int = 24000) -> str:
     lines = []
@@ -87,34 +243,55 @@ def format_transcript_for_llm(segments: List[Dict[str, Any]], max_chars: int = 2
     half = max_chars // 2 - 50
     return full_str[:half] + "\n\n...[omitted middle content]...\n\n" + full_str[-half:]
 
-def sanitize_and_parse_json(content: str) -> List[Dict[str, Any]]:
+def sanitize_and_parse_json(content: str) -> Dict[str, Any]:
     # 1. Remove markdown backticks
     cleaned = re.sub(r"^```(?:json)?", "", content.strip(), flags=re.IGNORECASE)
     cleaned = re.sub(r"```$", "", cleaned.strip())
     cleaned = cleaned.strip()
 
-    # 2. Find bracket matching array
+    # 2. Try JSON Object matching {...}
+    start_obj = cleaned.find("{")
+    end_obj = cleaned.rfind("}")
+    if start_obj != -1 and end_obj != -1 and end_obj > start_obj:
+        try:
+            data = json.loads(cleaned[start_obj:end_obj + 1])
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+
+    # 3. Try JSON Array matching [...]
     start_bracket = cleaned.find("[")
     end_bracket = cleaned.rfind("]")
-    if start_bracket != -1 and end_bracket != -1:
-        cleaned = cleaned[start_bracket:end_bracket + 1]
+    if start_bracket != -1 and end_bracket != -1 and end_bracket > start_bracket:
+        data = json.loads(cleaned[start_bracket:end_bracket + 1])
+        if isinstance(data, list):
+            return {"clips": data}
 
     data = json.loads(cleaned)
-    if not isinstance(data, list):
-        raise ValueError("Response is not a JSON list")
-    return data
+    if isinstance(data, list):
+        return {"clips": data}
+    if isinstance(data, dict):
+        return data
+    raise ValueError("Response is not a valid JSON list or object")
 
 def validate_and_filter_candidates(
     candidates: List[Dict[str, Any]],
     video_duration: float,
     min_dur: float,
-    max_dur: float
+    max_dur: float,
+    max_count: int = 10,
+    segments: Optional[List[Dict[str, Any]]] = None,
+    vision_boost: Optional[Dict[float, float]] = None,
+    vision_weight: float = 0.3
 ) -> List[Dict[str, Any]]:
     valid = []
     for item in candidates:
         try:
-            start = float(item.get("start_time_seconds", 0.0))
-            end = float(item.get("end_time_seconds", 0.0))
+            start_val = item.get("start_time_seconds") if item.get("start_time_seconds") is not None else item.get("start_time", 0.0)
+            end_val = item.get("end_time_seconds") if item.get("end_time_seconds") is not None else item.get("end_time", 0.0)
+            start = float(start_val)
+            end = float(end_val)
             dur = end - start
             title = str(item.get("title", "")).strip()[:100]
             reason = str(item.get("virality_reason", "")).strip()
@@ -139,8 +316,50 @@ def validate_and_filter_candidates(
         except Exception:
             continue
 
-    # Sort descending by hook score
-    valid.sort(key=lambda x: x["hook_score"], reverse=True)
+    # Re-scoring komposit: sinyal lokal objektif menambal bias skor LLM.
+    # Tanpa segments → perilaku lama (hook_score apa adanya) agar caller lama/tes tetap kompatibel.
+    avg_rate = _average_speech_rate(segments, video_duration) if segments else 0.0
+    for cand in valid:
+        if segments:
+            try:
+                rescored = compute_composite_score(
+                    cand["hook_score"],
+                    cand["start_time_seconds"],
+                    cand["end_time_seconds"],
+                    segments,
+                    avg_rate,
+                )
+                cand.update(rescored)
+            except Exception:
+                cand.update({"composite_score": cand["hook_score"], "speech_rate": 0.0, "keyword_density": 0.0})
+        else:
+            cand.update({"composite_score": cand["hook_score"], "speech_rate": 0.0, "keyword_density": 0.0})
+
+    # Vision boost (Phase 4 — 2.1): kandidat yang merentang momen visual menonjol
+    # naik sebesar visual_score * weight (dibatasi 100). Tanpa boost → tak berubah.
+    if vision_boost:
+        try:
+            weight = max(0.0, min(1.0, float(vision_weight)))
+        except (TypeError, ValueError):
+            weight = 0.3
+        if weight > 0:
+            for cand in valid:
+                try:
+                    c_start = float(cand["start_time_seconds"])
+                    c_end = float(cand["end_time_seconds"])
+                    peak = max(
+                        (score for ts, score in vision_boost.items()
+                         if c_start <= float(ts) <= c_end),
+                        default=0.0,
+                    )
+                    if peak > 0:
+                        cand["composite_score"] = int(min(
+                            100, cand.get("composite_score", cand["hook_score"]) + round(peak * weight)))
+                except (TypeError, ValueError, AttributeError):
+                    continue
+
+    # Sort descending by composite score (fallback hook_score bila seri/nol)
+    valid.sort(key=lambda x: (x.get("composite_score", x["hook_score"]), x["hook_score"]), reverse=True)
 
     # Overlap suppression (>50%)
     non_overlapping = []
@@ -165,43 +384,37 @@ def validate_and_filter_candidates(
         if not overlaps:
             non_overlapping.append(cand)
 
-    return non_overlapping[:5]
+    return non_overlapping[:max_count]
 
 def generate_heuristic_highlights(
     segments: List[Dict[str, Any]],
     video_duration: float,
     min_dur: float = 15.0,
-    max_dur: float = 60.0
-) -> List[Dict[str, Any]]:
+    max_dur: float = 60.0,
+    max_count: int = 10
+) -> HighlightsList:
     """
     Intelligent rule-based fallback when LLM is not configured or unavailable.
-    Finds natural segments with high speech density and engagement.
+    Finds natural segments with high speech density and engagement (up to 10 clips).
     """
     if not segments or video_duration < min_dur:
-        # Single clip fallback
         end = min(video_duration, max_dur)
-        return [{
+        return HighlightsList([{
             "title": "Momen Utama Video",
             "start_time_seconds": 0.0,
             "end_time_seconds": round(end, 2),
             "duration_seconds": round(end, 2),
             "hook_score": 85,
             "virality_reason": "Ringkasan pembuka video penuh dengan informasi inti."
-        }]
+        }], video_type="umum", recommended_preset_id="preset_tiktok_bold")
 
-    # Slice video into 3-5 windows
-    target_clips = 3
-    if video_duration > 180:
-        target_clips = 4
-    if video_duration > 300:
-        target_clips = 5
-
-    step = max(30.0, video_duration / (target_clips + 1))
+    # Slice video into 3-10 windows depending on duration
+    target_clips = min(max_count, max(3, int(video_duration // 60)))
+    step = max(20.0, video_duration / (target_clips + 1))
     highlights = []
 
     for i in range(target_clips):
         window_center = (i + 1) * step
-        # Find segment nearest to window_center
         matching_segs = [s for s in segments if abs(s.get("start", 0.0) - window_center) < step * 0.8]
         if not matching_segs:
             continue
@@ -238,7 +451,7 @@ def generate_heuristic_highlights(
             "virality_reason": f"Kutipan menarik dan pembahasan fokus pada bagian menit {int(c_start//60)}:{int(c_start%60):02d}."
         })
 
-    return highlights[:5]
+    return HighlightsList(highlights[:max_count], video_type="umum", recommended_preset_id="preset_tiktok_bold")
 
 async def extract_highlights_with_llm(
     segments: List[Dict[str, Any]],
@@ -252,13 +465,15 @@ async def extract_highlights_with_llm(
     temperature: float = 0.4,
     custom_prompt: Optional[str] = None,
     min_dur: Optional[float] = None,
-    max_dur: Optional[float] = None
-) -> List[Dict[str, Any]]:
+    max_dur: Optional[float] = None,
+    vision_boost: Optional[Dict[float, float]] = None,
+    vision_weight: float = 0.3
+) -> HighlightsList:
     """
     Call LLM API with exponential retry (3 attempts).
     Leverages two-tier context:
-    - Konteks Besar (Macro): video_title, video_description, and full_text to understand the overarching theme.
-    - Konteks Kecil (Micro): timestamped segments to accurately pinpoint viral hooks.
+    - Konteks Besar (Macro): video_title, video_description, full_text, and Video Types Taxonomy.
+    - Konteks Kecil (Micro): timestamped segments to accurately pinpoint viral hooks (up to 10 clips).
     Falls back to intelligent heuristic extractor if LLM is not provided or fails.
     """
     effective_min = float(min_dur) if min_dur is not None else float(settings.MIN_CLIP_SECONDS)
@@ -275,19 +490,27 @@ async def extract_highlights_with_llm(
     # 2. Format Konteks Kecil (Micro timestamped segments)
     micro_transcript = format_transcript_for_llm(segments)
 
+    # 3. Video Types Taxonomy Guide
+    types_guide = build_video_types_prompt_guide()
+
     system_instruction = custom_prompt or DEFAULT_SYSTEM_PROMPT
     system_instruction = system_instruction.replace("{min_dur}", str(int(effective_min)))\
                                            .replace("{max_dur}", str(int(effective_max)))
 
-    user_content = f"""=== [KONTEKS BESAR / MACRO CONTEXT] ===
+    user_content = f"""=== [TAKSONOMI TIPE/GENRE VIDEO & PANDUAN KURASI] ===
+{types_guide}
+
+=== [KONTEKS BESAR / MACRO CONTEXT] ===
 Judul Video: {video_title}
-Deskripsi Video: {video_description or '(Tidak ada deskripsi tambahan)'}
+Deskripsi Video (Metadata): {video_description or '(Tidak ada deskripsi tambahan)'}
 
 Seluruh Teks Extracted (Tema & Alur Keseluruhan):
 {macro_text}
 
 === [KONTEKS KECIL / MICRO SEGMENTS & TIMESTAMPS] ===
-Analisis segmen berstempel waktu di bawah ini. Pilih 3 sampai 5 klip terbaik yang RELEVAN dengan Konteks Besar di atas dan memiliki durasi {int(effective_min)} sampai {int(effective_max)} detik:
+Analisis segmen berstempel waktu di bawah ini.
+1. Tentukan TIPE/GENRE video yang paling cocok dari taksonomi di atas.
+2. Pilih 3 sampai 10 klip terbaik yang RELEVAN dengan Konteks Besar dan panduan kurasi tipe tersebut, dengan durasi {int(effective_min)} sampai {int(effective_max)} detik:
 {micro_transcript}
 """
 
@@ -315,9 +538,16 @@ Analisis segmen berstempel waktu di bawah ini. Pilih 3 sampai 5 klip terbaik yan
                     data = res.json()
                     content = data["choices"][0]["message"]["content"]
                     parsed = sanitize_and_parse_json(content)
-                    valid_candidates = validate_and_filter_candidates(parsed, video_duration, min_dur, max_dur)
+                    raw_clips = (parsed.get("clips") or parsed.get("highlights") or parsed.get("candidates") or []) if isinstance(parsed, dict) else (parsed if isinstance(parsed, list) else [])
+                    detected_type = parsed.get("video_type", "umum") if isinstance(parsed, dict) else "umum"
+                    rec_preset = parsed.get("recommended_preset_id") if isinstance(parsed, dict) else None
+                    if not rec_preset:
+                        vt = get_video_type_by_id(detected_type)
+                        rec_preset = vt.get("recommended_preset_id") if vt else "preset_tiktok_bold"
+
+                    valid_candidates = validate_and_filter_candidates(raw_clips, video_duration, effective_min, effective_max, max_count=10, segments=segments, vision_boost=vision_boost, vision_weight=vision_weight)
                     if valid_candidates:
-                        return valid_candidates
+                        return HighlightsList(valid_candidates, video_type=detected_type, recommended_preset_id=rec_preset)
         except Exception:
             pass
         if attempt < 2:
@@ -325,7 +555,356 @@ Analisis segmen berstempel waktu di bawah ini. Pilih 3 sampai 5 klip terbaik yan
             await asyncio.sleep(delays[attempt])
 
     # Fallback if LLM failed
-    return generate_heuristic_highlights(segments, video_duration, min_dur, max_dur)
+    return generate_heuristic_highlights(segments, video_duration, effective_min, effective_max)
+
+EDITORIAL_BRIEF_SYSTEM = """Kamu adalah editor-in-chief video pendek (TikTok, Reels, YouTube Shorts).
+Tugasmu: baca metadata + seluruh isi video, lalu susun EDITORIAL BRIEF untuk editor klip.
+
+Balas HANYA dengan JSON Object yang valid, TANPA markdown block, TANPA penjelasan tambahan:
+{
+  "video_type": "id_tipe_yang_sesuai",
+  "theme_summary": "Ringkasan 1-2 kalimat tema sentral video",
+  "must_avoid_topics": ["sponsor", "intro basa-basi", "topik tidak relevan", "..."],
+  "must_include_topics": ["topik wajib diambil", "..."],
+  "tone": "gaya bahasa video (mis. santai, formal, meledak-ledak)"
+}"""
+
+
+async def _post_chat(
+    llm_base_url: str,
+    llm_api_key: Optional[str],
+    llm_model: Optional[str],
+    messages: List[Dict[str, str]],
+    temperature: float,
+    timeout_seconds: float = 45.0,
+) -> str:
+    """Satu panggilan chat/completions. Kembalikan isi pesan atau raise."""
+    headers = {"Content-Type": "application/json"}
+    if llm_api_key:
+        headers["Authorization"] = f"Bearer {llm_api_key}"
+    payload = {
+        "model": llm_model or "gpt-4o-mini",
+        "messages": messages,
+        "temperature": temperature,
+    }
+    url = f"{llm_base_url.rstrip('/')}/chat/completions"
+    async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+        res = await client.post(url, headers=headers, json=payload)
+        if res.status_code != 200:
+            raise ValueError(f"LLM HTTP {res.status_code}: {res.text[:200]}")
+        return res.json()["choices"][0]["message"]["content"]
+
+
+async def _request_editorial_brief(
+    llm_base_url: str,
+    llm_api_key: Optional[str],
+    llm_model: Optional[str],
+    video_title: str,
+    video_description: Optional[str],
+    macro_text: str,
+    types_guide: str,
+) -> Optional[Dict[str, Any]]:
+    """Pass 1 Macro Analysis → brief dict atau None bila gagal (2x retry, 45s per call)."""
+    pass1_user = f"""=== [TAKSONOMI TIPE/GENRE VIDEO] ===
+{types_guide}
+
+=== [METADATA VIDEO] ===
+Judul: {video_title}
+Deskripsi: {video_description or '(Tidak ada deskripsi tambahan)'}
+
+=== [SELURUH ISI VIDEO] ===
+{macro_text}
+
+Susun EDITORIAL BRIEF sesuai format JSON yang diminta."""
+    for attempt in range(2):
+        try:
+            content = await _post_chat(
+                llm_base_url, llm_api_key, llm_model,
+                [{"role": "system", "content": EDITORIAL_BRIEF_SYSTEM},
+                 {"role": "user", "content": pass1_user}],
+                temperature=0.3,
+            )
+            parsed = sanitize_and_parse_json(content)
+            if isinstance(parsed, dict) and parsed.get("theme_summary"):
+                brief = {
+                    "video_type": str(parsed.get("video_type") or "umum"),
+                    "theme_summary": str(parsed.get("theme_summary", ""))[:500],
+                    "must_avoid_topics": list(parsed.get("must_avoid_topics") or [])[:10],
+                    "must_include_topics": list(parsed.get("must_include_topics") or [])[:10],
+                    "tone": str(parsed.get("tone") or "-"),
+                }
+                if not get_video_type_by_id(brief["video_type"]):
+                    brief["video_type"] = "umum"
+                return brief
+        except Exception:
+            pass
+        if attempt < 1:
+            import asyncio
+            await asyncio.sleep(2.0)
+    return None
+
+
+def _build_micro_system(
+    custom_prompt: Optional[str],
+    effective_min: float,
+    effective_max: float,
+    brief: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Susun system prompt micro-selection; brief Pass 1 ditempel bila ada."""
+    import json as _json
+    base_system = custom_prompt or DEFAULT_SYSTEM_PROMPT
+    base_system = base_system.replace("{min_dur}", str(int(effective_min)))\
+                             .replace("{max_dur}", str(int(effective_max)))
+    if brief:
+        base_system += (
+            "\n\n=== [EDITORIAL BRIEF — HASIL ANALISIS PASS 1, WAJIB DIPATUHI] ===\n"
+            + _json.dumps(brief, ensure_ascii=False)
+            + "\nHindari topik di must_avoid_topics meskipun terlihat menarik. "
+              "Utamakan topik di must_include_topics."
+        )
+    return base_system
+
+
+async def _request_micro_clips(
+    llm_base_url: str,
+    llm_api_key: Optional[str],
+    llm_model: Optional[str],
+    temperature: float,
+    system_instruction: str,
+    micro_user_content: str,
+    fallback_video_type: str = "umum",
+    max_attempts: int = 2,
+) -> tuple:
+    """
+    Satu request Micro Clip Selection. Return (raw_clips, video_type, rec_preset_id).
+    raw_clips kosong bila gagal — caller yang tentukan fallback.
+    """
+    delays = [2.0, 4.0]
+    for attempt in range(max_attempts):
+        try:
+            content = await _post_chat(
+                llm_base_url, llm_api_key, llm_model,
+                [{"role": "system", "content": system_instruction},
+                 {"role": "user", "content": micro_user_content}],
+                temperature=temperature,
+            )
+            parsed = sanitize_and_parse_json(content)
+            raw_clips = (parsed.get("clips") or parsed.get("highlights") or parsed.get("candidates") or []) if isinstance(parsed, dict) else (parsed if isinstance(parsed, list) else [])
+            if raw_clips:
+                detected = parsed.get("video_type", fallback_video_type) if isinstance(parsed, dict) else fallback_video_type
+                if not get_video_type_by_id(detected):
+                    detected = fallback_video_type
+                rec_preset = parsed.get("recommended_preset_id") if isinstance(parsed, dict) else None
+                if not rec_preset:
+                    vt = get_video_type_by_id(detected)
+                    rec_preset = vt.get("recommended_preset_id") if vt else "preset_tiktok_bold"
+                return list(raw_clips), detected, rec_preset
+        except Exception:
+            pass
+        if attempt < max_attempts - 1:
+            import asyncio
+            await asyncio.sleep(delays[min(attempt, len(delays) - 1)])
+    return [], fallback_video_type, "preset_tiktok_bold"
+
+
+def smart_chunk_transcript(
+    segments: List[Dict[str, Any]], video_duration: float,
+) -> List[List[Dict[str, Any]]]:
+    """
+    Bagi segmen temporal jadi N chunk (batas di batas segmen, kalimat tak terpotong):
+    < 30 mnt → 1 chunk (single-pass); 30-90 mnt → 3 chunk; > 90 mnt → 5 chunk.
+    Pure function (tanpa I/O).
+    """
+    if not segments:
+        return []
+    if video_duration < 1800:
+        return [list(segments)]
+    num_chunks = 3 if video_duration <= 5400 else 5
+    num_chunks = min(num_chunks, len(segments))
+    base, extra = divmod(len(segments), num_chunks)
+    chunks, idx = [], 0
+    for i in range(num_chunks):
+        size = base + (1 if i < extra else 0)
+        chunks.append(segments[idx:idx + size])
+        idx += size
+    return [c for c in chunks if c]
+
+
+def _truncate_macro(full_text: Optional[str], segments: List[Dict[str, Any]]) -> str:
+    macro_text = full_text or " ".join(s.get("text", "").strip() for s in segments)
+    if len(macro_text) > 8000:
+        macro_text = macro_text[:4000] + "\n...[ringkasan alur tengah]...\n" + macro_text[-4000:]
+    return macro_text
+
+
+async def extract_highlights_chunked(
+    segments: List[Dict[str, Any]],
+    video_duration: float,
+    video_title: str = "Video Tanpa Judul",
+    video_description: Optional[str] = None,
+    full_text: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+    llm_api_key: Optional[str] = None,
+    llm_model: Optional[str] = "gpt-4o-mini",
+    temperature: float = 0.4,
+    custom_prompt: Optional[str] = None,
+    min_dur: Optional[float] = None,
+    max_dur: Optional[float] = None,
+    two_pass: bool = False,
+    vision_boost: Optional[Dict[float, float]] = None,
+    vision_weight: float = 0.3,
+) -> HighlightsList:
+    """
+    Smart Chunk Strategy (Phase 2 — 1.2): 1 request LLM per chunk temporal (2x retry),
+    lalu meta-ranking global (overlap suppression + max 10).
+    Bila two_pass=True, Pass 1 macro jalan sekali dan brief dipakai semua chunk.
+    Timestamp segmen dipertahankan absolut agar klip antar-chunk bisa digabung.
+    """
+    effective_min = float(min_dur) if min_dur is not None else float(settings.MIN_CLIP_SECONDS)
+    effective_max = float(max_dur) if max_dur is not None else float(settings.MAX_CLIP_SECONDS)
+
+    if not llm_base_url:
+        return generate_heuristic_highlights(segments, video_duration, effective_min, effective_max)
+
+    chunks = smart_chunk_transcript(segments, video_duration)
+    if len(chunks) <= 1:
+        if two_pass:
+            return await extract_highlights_two_pass(
+                segments=segments, video_duration=video_duration, video_title=video_title,
+                video_description=video_description, full_text=full_text,
+                llm_base_url=llm_base_url, llm_api_key=llm_api_key, llm_model=llm_model,
+                temperature=temperature, custom_prompt=custom_prompt,
+                min_dur=effective_min, max_dur=effective_max,
+                vision_boost=vision_boost, vision_weight=vision_weight,
+            )
+        return await extract_highlights_with_llm(
+            segments=segments, video_duration=video_duration, video_title=video_title,
+            video_description=video_description, full_text=full_text,
+            llm_base_url=llm_base_url, llm_api_key=llm_api_key, llm_model=llm_model,
+            temperature=temperature, custom_prompt=custom_prompt,
+            min_dur=effective_min, max_dur=effective_max,
+            vision_boost=vision_boost, vision_weight=vision_weight,
+        )
+
+    macro_text = _truncate_macro(full_text, segments)
+    types_guide = build_video_types_prompt_guide()
+
+    brief = None
+    if two_pass:
+        brief = await _request_editorial_brief(
+            llm_base_url, llm_api_key, llm_model,
+            video_title, video_description, macro_text, types_guide,
+        )
+
+    system_instruction = _build_micro_system(custom_prompt, effective_min, effective_max, brief)
+
+    all_raw, type_votes = [], {}
+    total = len(chunks)
+    for i, chunk in enumerate(chunks, start=1):
+        micro = format_transcript_for_llm(chunk)
+        user_content = f"""=== [TAKSONOMI TIPE/GENRE VIDEO & PANDUAN KURASI] ===
+{types_guide}
+
+PERHATIAN: Ini BAGIAN {i} DARI {total} video. Timestamp di bawah adalah ABSOLUT
+(waktu sebenarnya dalam video) — kembalikan timestamp apa adanya, jangan digeser.
+Pilih 2 sampai 5 klip terbaik dari bagian ini yang berdurasi {int(effective_min)} sampai {int(effective_max)} detik:
+{micro}
+"""
+        raw, detected, _ = await _request_micro_clips(
+            llm_base_url, llm_api_key, llm_model, temperature,
+            system_instruction, user_content,
+            fallback_video_type=(brief or {}).get("video_type", "umum"),
+        )
+        all_raw.extend(raw)
+        if detected and detected != "umum":
+            type_votes[detected] = type_votes.get(detected, 0) + 1
+
+    if not all_raw:
+        return generate_heuristic_highlights(segments, video_duration, effective_min, effective_max)
+
+    video_type = max(type_votes, key=type_votes.get) if type_votes else (brief or {}).get("video_type", "umum")
+    vt = get_video_type_by_id(video_type)
+    rec_preset = vt.get("recommended_preset_id") if vt else "preset_tiktok_bold"
+    valid = validate_and_filter_candidates(all_raw, video_duration, effective_min, effective_max, max_count=10, segments=segments, vision_boost=vision_boost, vision_weight=vision_weight)
+    if not valid:
+        return generate_heuristic_highlights(segments, video_duration, effective_min, effective_max)
+    return HighlightsList(valid, video_type=video_type, recommended_preset_id=rec_preset)
+
+
+async def extract_highlights_two_pass(
+    segments: List[Dict[str, Any]],
+    video_duration: float,
+    video_title: str = "Video Tanpa Judul",
+    video_description: Optional[str] = None,
+    full_text: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+    llm_api_key: Optional[str] = None,
+    llm_model: Optional[str] = "gpt-4o-mini",
+    temperature: float = 0.4,
+    custom_prompt: Optional[str] = None,
+    min_dur: Optional[float] = None,
+    max_dur: Optional[float] = None,
+    vision_boost: Optional[Dict[float, float]] = None,
+    vision_weight: float = 0.3
+) -> HighlightsList:
+    """
+    Sequential Two-Pass LLM Strategy (Phase 2 — 1.1):
+    - Pass 1 (Macro, 45s, 2x retry): pahami video secara holistik → editorial_brief.
+    - Pass 2 (Micro, 45s, 2x retry): pilih klip dari micro-segments dengan brief sebagai
+      system context tambahan (noise konteks besar sudah disaring).
+    Pass 1 gagal → fallback ke single-pass existing (lalu heuristik bila itu pun gagal).
+    """
+    effective_min = float(min_dur) if min_dur is not None else float(settings.MIN_CLIP_SECONDS)
+    effective_max = float(max_dur) if max_dur is not None else float(settings.MAX_CLIP_SECONDS)
+
+    if not llm_base_url:
+        return generate_heuristic_highlights(segments, video_duration, effective_min, effective_max)
+
+    macro_text = _truncate_macro(full_text, segments)
+    micro_transcript = format_transcript_for_llm(segments)
+    types_guide = build_video_types_prompt_guide()
+
+    # ---- Pass 1: Macro Analysis → editorial_brief ----
+    brief = await _request_editorial_brief(
+        llm_base_url, llm_api_key, llm_model,
+        video_title, video_description, macro_text, types_guide,
+    )
+
+    if brief is None:
+        # Fallback ke single-pass existing (sudah termasuk fallback heuristik)
+        return await extract_highlights_with_llm(
+            segments=segments, video_duration=video_duration, video_title=video_title,
+            video_description=video_description, full_text=full_text,
+            llm_base_url=llm_base_url, llm_api_key=llm_api_key, llm_model=llm_model,
+            temperature=temperature, custom_prompt=custom_prompt,
+            min_dur=effective_min, max_dur=effective_max,
+            vision_boost=vision_boost, vision_weight=vision_weight,
+        )
+
+    # ---- Pass 2: Micro Clip Selection dengan brief sebagai system context ----
+    system_instruction = _build_micro_system(custom_prompt, effective_min, effective_max, brief)
+    pass2_user = f"""=== [TAKSONOMI TIPE/GENRE VIDEO & PANDUAN KURASI] ===
+{types_guide}
+
+=== [BRIEF EDITORIAL] ===
+Tema: {brief['theme_summary']}
+Wajib dihindari: {', '.join(brief['must_avoid_topics']) or '-'}
+Wajib diutamakan: {', '.join(brief['must_include_topics']) or '-'}
+
+=== [KONTEKS KECIL / MICRO SEGMENTS & TIMESTAMPS] ===
+Pilih 3 sampai 10 klip terbaik yang RELEVAN dengan brief di atas, dengan durasi {int(effective_min)} sampai {int(effective_max)} detik:
+{micro_transcript}
+"""
+    raw_clips, _, rec_preset = await _request_micro_clips(
+        llm_base_url, llm_api_key, llm_model, temperature,
+        system_instruction, pass2_user, fallback_video_type=brief["video_type"],
+    )
+    if raw_clips:
+        valid_candidates = validate_and_filter_candidates(raw_clips, video_duration, effective_min, effective_max, max_count=10, segments=segments, vision_boost=vision_boost, vision_weight=vision_weight)
+        if valid_candidates:
+            return HighlightsList(valid_candidates, video_type=brief["video_type"], recommended_preset_id=rec_preset)
+
+    return generate_heuristic_highlights(segments, video_duration, effective_min, effective_max)
 
 async def generate_clip_narration(
     macro_title: str,

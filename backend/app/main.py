@@ -17,7 +17,10 @@ from app.routers import (
     shorts,
     tts,
     presets,
-    audio
+    audio,
+    sfx,
+    jobs,
+    waha
 )
 
 logging.basicConfig(
@@ -93,6 +96,10 @@ app.include_router(shorts.router, prefix="/api")
 app.include_router(tts.router, prefix="/api")
 app.include_router(presets.router, prefix="/api")
 app.include_router(audio.router, prefix="/api")
+app.include_router(sfx.router, prefix="/api")
+app.include_router(jobs.router, prefix="/api")
+app.include_router(waha.public_router, prefix="/api")
+app.include_router(waha.router, prefix="/api")
 
 @app.get("/")
 async def root():

@@ -188,3 +188,80 @@ def test_slide_up_motion_generation():
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
+
+def test_bounce_in_motion_generation():
+    sample_words = [
+        {"word": "Halo", "start": 0.0, "end": 0.5},
+        {"word": "dunia", "start": 0.5, "end": 1.0},
+    ]
+    with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        generate_karaoke_ass(
+            words=sample_words,
+            clip_start=0.0,
+            clip_end=2.0,
+            output_path=tmp_path,
+            motion_type="bounce_in",
+            margin_v=300,
+        )
+        with open(tmp_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        assert r"\move(540,-50,540," in content
+        assert r"\fad(120,80)" in content
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+def test_zoom_flash_motion_generation():
+    sample_words = [
+        {"word": "Promo", "start": 0.0, "end": 0.5},
+        {"word": "gila", "start": 0.5, "end": 1.0},
+    ]
+    with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        generate_karaoke_ass(
+            words=sample_words,
+            clip_start=0.0,
+            clip_end=2.0,
+            output_path=tmp_path,
+            motion_type="zoom_flash",
+        )
+        with open(tmp_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        assert r"\fscx200" in content
+        assert r"\t(0,150,\fscx100\fscy100)" in content
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+def test_glitch_reveal_motion_generation():
+    sample_words = [
+        {"word": "Error", "start": 0.0, "end": 0.5},
+        {"word": "sistem", "start": 0.5, "end": 1.0},
+    ]
+    with tempfile.NamedTemporaryFile(suffix=".ass", delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        generate_karaoke_ass(
+            words=sample_words,
+            clip_start=0.0,
+            clip_end=2.0,
+            output_path=tmp_path,
+            motion_type="glitch_reveal",
+            margin_v=300,
+        )
+        with open(tmp_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        assert r"\pos(" in content
+        assert r"\t(0,80," in content
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)

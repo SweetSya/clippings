@@ -46,6 +46,11 @@ storage/tts/*
 !storage/tts/.gitkeep
 storage/credentials/*
 !storage/credentials/.gitkeep
+storage/audio_library/*
+!storage/audio_library/.gitkeep
+storage/reframe/*
+!storage/reframe/.gitkeep
+backend/storage/
 
 # Local databases & env
 *.db

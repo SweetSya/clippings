@@ -251,3 +251,153 @@ async def test_clip_narration_and_voiceover(monkeypatch):
         assert res_audio.status_code == 200
         assert res_audio.content == b"fake_voice_data"
 
+
+@pytest.mark.asyncio
+async def test_preset_export_duplicate_import():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_auth_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        res_list = await ac.get("/api/presets", headers=headers)
+        assert res_list.status_code == 200
+        presets = res_list.json()
+        builtin = [p for p in presets if p["is_builtin"]][0]
+
+        # 1. Export builtin
+        res_exp = await ac.get(f"/api/presets/{builtin['id']}/export", headers=headers)
+        assert res_exp.status_code == 200
+        exported = res_exp.json()
+        assert "preset" in exported
+        assert exported["preset"]["name"] == builtin["name"]
+        assert "is_builtin" not in exported["preset"]
+        assert "created_at" not in exported["preset"]
+
+        # 2. Export 404
+        res_exp404 = await ac.get("/api/presets/does-not-exist/export", headers=headers)
+        assert res_exp404.status_code == 404
+
+        # 3. Duplicate builtin → custom baru
+        res_dup = await ac.post(f"/api/presets/{builtin['id']}/duplicate", headers=headers)
+        assert res_dup.status_code == 201
+        dup = res_dup.json()
+        assert dup["is_builtin"] is False
+        assert dup["name"] == f"Salinan dari {builtin['name']}"[:100]
+        assert dup["font"] == builtin["font"]
+
+        # 4. Duplicate 404
+        res_dup404 = await ac.post("/api/presets/does-not-exist/duplicate", headers=headers)
+        assert res_dup404.status_code == 404
+
+        # 5. Import hasil export → custom baru
+        res_imp = await ac.post("/api/presets/import", json=exported, headers=headers)
+        assert res_imp.status_code == 201
+        imported = res_imp.json()
+        assert imported["is_builtin"] is False
+        assert imported["name"] == builtin["name"]
+
+        # 6. Import raw (tanpa wrapper) juga bisa
+        res_imp2 = await ac.post("/api/presets/import", json=exported["preset"], headers=headers)
+        assert res_imp2.status_code == 201
+
+        # 7. Import invalid → 422
+        res_bad = await ac.post("/api/presets/import", json={"preset": {"name": ""}}, headers=headers)
+        assert res_bad.status_code == 422
+
+        # cleanup
+        for pid in [dup["id"], imported["id"], res_imp2.json()["id"]]:
+            await ac.delete(f"/api/presets/{pid}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_preset_categories_and_seeds():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_auth_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Reset builtins menanam 19 preset (11 lama + 8 baru)
+        res_reset = await ac.post("/api/presets/reset-builtins", headers=headers)
+        assert res_reset.status_code == 200
+        all_presets = res_reset.json()
+        assert len(all_presets) >= 19
+        cats = {p["category"] for p in all_presets if p["is_builtin"]}
+        for expected in ["streamer", "podcast", "educational", "motivational", "gaming"]:
+            assert expected in cats, f"kategori {expected} hilang"
+
+        # Filter kategori
+        res_streamer = await ac.get("/api/presets?category=streamer", headers=headers)
+        assert res_streamer.status_code == 200
+        streamer = res_streamer.json()
+        assert len(streamer) >= 6
+        assert all(p["category"] == "streamer" for p in streamer)
+        ids = {p["id"] for p in streamer}
+        assert "preset_streamer_face_top" in ids
+        assert "preset_streamer_face_bottom" in ids
+
+        # Kategori bertahan lewat export→import (jadi custom)
+        face_top = next(p for p in streamer if p["id"] == "preset_streamer_face_top")
+        res_exp = await ac.get(f"/api/presets/{face_top['id']}/export", headers=headers)
+        assert res_exp.status_code == 200
+        assert res_exp.json()["preset"]["category"] == "streamer"
+        res_imp = await ac.post("/api/presets/import", json=res_exp.json(), headers=headers)
+        assert res_imp.status_code == 201
+        assert res_imp.json()["category"] == "streamer"
+        assert res_imp.json()["is_builtin"] is False
+        await ac.delete(f"/api/presets/{res_imp.json()['id']}", headers=headers)
+
+
+@pytest.mark.asyncio
+async def test_video_reanalyze_guards():
+    import uuid
+    import app.database as db_module
+    from app.models import SourceVideo
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        token = await get_auth_token(ac)
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # 1. Video tak ada → 404
+        res404 = await ac.post("/api/videos/does-not-exist/reanalyze", json={}, headers=headers)
+        assert res404.status_code == 404
+
+        # 2. Tanpa transkrip → 404 TRANSCRIPT_NOT_FOUND
+        vid = uuid.uuid4().hex
+        async with db_module.AsyncSessionLocal() as session:
+            session.add(SourceVideo(
+                id=vid, filename="x.mp4", original_name="X",
+                local_file_path="uploads/x.mp4", file_size_bytes=10,
+                duration_seconds=60.0, status="READY",
+            ))
+            await session.commit()
+        try:
+            res_no_t = await ac.post(f"/api/videos/{vid}/reanalyze", json={}, headers=headers)
+            assert res_no_t.status_code == 404
+
+            # 3. Validasi max < min → 422
+            res_bad = await ac.post(
+                f"/api/videos/{vid}/reanalyze",
+                json={"min_dur": 60, "max_dur": 10},
+                headers=headers,
+            )
+            assert res_bad.status_code == 422
+        finally:
+            await ac.delete(f"/api/videos/{vid}", headers=headers)
+
+        # 4. Status processing → 409
+        vid2 = uuid.uuid4().hex
+        async with db_module.AsyncSessionLocal() as session:
+            session.add(SourceVideo(
+                id=vid2, filename="y.mp4", original_name="Y",
+                local_file_path="uploads/y.mp4", file_size_bytes=10,
+                duration_seconds=60.0, status="ANALYZING",
+            ))
+            await session.commit()
+        try:
+            res409 = await ac.post(f"/api/videos/{vid2}/reanalyze", json={}, headers=headers)
+            assert res409.status_code == 409
+        finally:
+            async with db_module.AsyncSessionLocal() as session:
+                v = await session.get(SourceVideo, vid2)
+                if v:
+                    await session.delete(v)
+                    await session.commit()
+

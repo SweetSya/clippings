@@ -2,10 +2,11 @@ import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, update
-from app.database import AsyncSessionLocal
+import app.database as db_module
 from app.models import AppJob, SourceVideo, RenderedShort, GoogleDriveExport
 from app.config import settings
 from app.services.pipeline import (
+    handle_youtube_download,
     handle_audio_extract,
     handle_transcribe,
     handle_llm_analyze,
@@ -53,7 +54,7 @@ class BackgroundWorker:
                 await asyncio.sleep(2.0)
 
     async def _claim_next_job(self) -> str | None:
-        async with AsyncSessionLocal() as session:
+        async with db_module.AsyncSessionLocal() as session:
             # Query oldest QUEUED job
             stmt = select(AppJob).where(AppJob.status == "QUEUED").order_by(AppJob.created_at.asc()).limit(1)
             result = await session.execute(stmt)
@@ -68,13 +69,15 @@ class BackgroundWorker:
         return None
 
     async def _execute_job(self, job_id: str):
-        async with AsyncSessionLocal() as session:
+        async with db_module.AsyncSessionLocal() as session:
             job = await session.get(AppJob, job_id)
             if not job:
                 return
 
             try:
-                if job.job_type == "AUDIO_EXTRACT":
+                if job.job_type == "YOUTUBE_DOWNLOAD":
+                    await handle_youtube_download(job, session)
+                elif job.job_type == "AUDIO_EXTRACT":
                     await handle_audio_extract(job, session)
                 elif job.job_type == "TRANSCRIBE":
                     async with self._transcribe_sem:
@@ -100,7 +103,7 @@ class BackgroundWorker:
                 err_msg = str(e)[-500:]
                 job.error_message = err_msg
 
-                if job.attempts < job.max_attempts and job.job_type not in ["AUDIO_EXTRACT", "RENDER"]:
+                if job.attempts < job.max_attempts and job.job_type not in ["AUDIO_EXTRACT", "RENDER", "YOUTUBE_DOWNLOAD"]:
                     # Retry
                     job.status = "QUEUED"
                 else:
@@ -113,7 +116,7 @@ class BackgroundWorker:
 
     async def _mark_entity_failed(self, job: AppJob, session, err_msg: str):
         try:
-            if job.job_type in ["AUDIO_EXTRACT", "TRANSCRIBE", "LLM_ANALYZE"]:
+            if job.job_type in ["YOUTUBE_DOWNLOAD", "AUDIO_EXTRACT", "TRANSCRIBE", "LLM_ANALYZE"]:
                 video = await session.get(SourceVideo, job.ref_id)
                 if video:
                     video.status = "FAILED"
@@ -137,7 +140,7 @@ class BackgroundWorker:
             try:
                 await asyncio.sleep(60.0)
                 cutoff = datetime.now(timezone.utc) - timedelta(minutes=30)
-                async with AsyncSessionLocal() as session:
+                async with db_module.AsyncSessionLocal() as session:
                     stmt = select(AppJob).where(
                         AppJob.status == "RUNNING",
                         AppJob.started_at < cutoff

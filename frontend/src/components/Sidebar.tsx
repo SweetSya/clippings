@@ -10,7 +10,8 @@ import {
   Settings,
   LogOut,
   Flame,
-  Activity
+  Activity,
+  ListOrdered
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -30,6 +31,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'upload', label: 'Upload Video', icon: UploadCloud },
     { id: 'studio', label: 'Clip Studio', icon: Sparkles },
     { id: 'shorts', label: 'Hasil Shorts & Drive', icon: Smartphone },
+    { id: 'queue', label: 'Antrean Worker', icon: ListOrdered },
     { id: 'audio', label: 'Audio Library', icon: Music },
     { id: 'preset', label: 'Preset', icon: Bookmark },
     { id: 'tts', label: 'Text-to-Speech', icon: Mic },
@@ -38,17 +40,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
   ];
 
   return (
-    <aside className="w-64 bg-[#F5F5F4] border-r border-[#D6D3D1] flex flex-col h-screen fixed left-0 top-0 select-none z-20">
+    <aside className="w-64 bg-ember-surface border-r border-ember-border flex flex-col h-screen fixed left-0 top-0 select-none z-20">
       {/* Brand Header */}
-      <div className="p-6 border-b border-[#D6D3D1] flex items-center space-x-3">
+      <div className="p-6 border-b border-ember-border flex items-center space-x-3">
         <div className="w-10 h-10 rounded-xl bg-[#C2410C] flex items-center justify-center text-white shadow-md shadow-[#C2410C]/20">
           <Flame className="w-6 h-6 fill-current" />
         </div>
         <div>
-          <h1 className="font-display font-bold text-xl text-[#1C1917] tracking-tight leading-none">
+          <h1 className="font-display font-bold text-xl text-ember-text-primary tracking-tight leading-none">
             Ember Shorts
           </h1>
-          <p className="text-xs text-[#78716C] font-mono mt-1">Local AI Clipper</p>
+          <p className="text-xs text-ember-neutral font-mono mt-1">Local AI Clipper</p>
         </div>
       </div>
 
@@ -63,11 +65,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
               onClick={() => onTabChange(item.id)}
               className={`w-full flex items-center space-x-3 px-3.5 py-2.5 rounded-lg text-sm font-semibold transition-all duration-150 text-left ${
                 isActive
-                  ? 'bg-[#E7E5E4] text-[#C2410C] shadow-sm border-l-4 border-[#C2410C]'
-                  : 'text-[#57534E] hover:bg-[#E7E5E4]/60 hover:text-[#1C1917]'
+                  ? 'bg-ember-surface-raised text-[#C2410C] shadow-sm border-l-4 border-[#C2410C]'
+                  : 'text-ember-text-secondary hover:bg-ember-surface-raised/60 hover:text-ember-text-primary'
               }`}
             >
-              <Icon className={`w-5 h-5 ${isActive ? 'text-[#C2410C]' : 'text-[#78716C]'}`} />
+              <Icon className={`w-5 h-5 ${isActive ? 'text-[#C2410C]' : 'text-ember-neutral'}`} />
               <span>{item.label}</span>
             </button>
           );
@@ -75,11 +77,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </nav>
 
       {/* Footer Info & Logout */}
-      <div className="p-4 border-t border-[#D6D3D1] space-y-3 bg-[#F5F5F4]/80">
+      <div className="p-4 border-t border-ember-border space-y-3 bg-ember-surface/80">
         {/* System Health Status */}
-        <div className="flex items-center justify-between px-2 py-1.5 bg-[#E7E5E4] rounded-md text-xs font-mono">
-          <span className="flex items-center space-x-1.5 text-[#57534E]">
-            <Activity className="w-3.5 h-3.5 text-[#78716C]" />
+        <div className="flex items-center justify-between px-2 py-1.5 bg-ember-surface-raised rounded-md text-xs font-mono">
+          <span className="flex items-center space-x-1.5 text-ember-text-secondary">
+            <Activity className="w-3.5 h-3.5 text-ember-neutral" />
             <span>Local Engine</span>
           </span>
           <span className="flex items-center space-x-1">
@@ -94,7 +96,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
         <button
           onClick={onLogout}
-          className="w-full flex items-center justify-center space-x-2 px-3 py-2 text-sm text-[#57534E] hover:text-[#DC2626] hover:bg-red-50 rounded-lg transition-colors"
+          className="w-full flex items-center justify-center space-x-2 px-3 py-2 text-sm text-ember-text-secondary hover:text-[#DC2626] hover:bg-red-50 rounded-lg transition-colors"
         >
           <LogOut className="w-4 h-4" />
           <span>Keluar Sesi (PIN)</span>

@@ -14,7 +14,7 @@ import {
   Check,
   X,
 } from 'lucide-react';
-import { audioApi } from '../services/api';
+import { audioApi, sfxApi, SFXTrack } from '../services/api';
 import { AudioTrack } from '../types';
 
 interface AudioLibraryPageProps {
@@ -44,6 +44,11 @@ export const AudioLibraryPage: React.FC<AudioLibraryPageProps> = ({ onUseAsBgm }
   const [downloading, setDownloading] = useState(false);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+  const [libTab, setLibTab] = useState<'bgm' | 'sfx'>('bgm');
+  const [sfxList, setSfxList] = useState<SFXTrack[]>([]);
+  const [sfxLoading, setSfxLoading] = useState(false);
+  const [sfxUploading, setSfxUploading] = useState(false);
+  const sfxInputRef = useRef<HTMLInputElement | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -69,7 +74,53 @@ export const AudioLibraryPage: React.FC<AudioLibraryPageProps> = ({ onUseAsBgm }
 
   useEffect(() => {
     fetchTracks();
+    fetchSfx();
   }, []);
+
+  const fetchSfx = async () => {
+    setSfxLoading(true);
+    try {
+      setSfxList(await sfxApi.list());
+    } catch (err) {
+      console.error('Gagal memuat SFX', err);
+    } finally {
+      setSfxLoading(false);
+    }
+  };
+
+  const handleSfxPicked = async (file: File) => {
+    const ext = `.${file.name.split('.').pop()?.toLowerCase() || ''}`;
+    if (!ALLOWED_EXTENSIONS.includes(ext)) {
+      showNotification('error', `Format ${ext} tidak didukung.`);
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      showNotification('error', 'Ukuran SFX melebihi 5MB.');
+      return;
+    }
+    setSfxUploading(true);
+    try {
+      const track = await sfxApi.upload(file);
+      showNotification('success', `"${track.title}" ditambahkan ke library SFX.`);
+      await fetchSfx();
+    } catch (err: any) {
+      showNotification('error', err.response?.data?.detail || 'Gagal mengunggah SFX.');
+    } finally {
+      setSfxUploading(false);
+      if (sfxInputRef.current) sfxInputRef.current.value = '';
+    }
+  };
+
+  const handleDeleteSfx = async (track: SFXTrack) => {
+    if (!window.confirm(`Hapus SFX "${track.title}"?`)) return;
+    try {
+      await sfxApi.remove(track.id);
+      showNotification('success', `"${track.title}" dihapus.`);
+      await fetchSfx();
+    } catch (err: any) {
+      showNotification('error', 'Gagal menghapus SFX.');
+    }
+  };
 
   const handleFilePicked = async (file: File) => {
     const ext = `.${file.name.split('.').pop()?.toLowerCase() || ''}`;
@@ -178,6 +229,82 @@ export const AudioLibraryPage: React.FC<AudioLibraryPageProps> = ({ onUseAsBgm }
         </button>
       </div>
 
+      {/* Tab switcher */}
+      <div className="flex space-x-2">
+        {[
+          { id: 'bgm', label: '🎵 Musik Latar (BGM)' },
+          { id: 'sfx', label: '🔔 Sound Effects' },
+        ].map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setLibTab(t.id as any)}
+            className={`px-4 py-2 text-xs font-bold rounded-xl transition-all ${
+              libTab === t.id ? 'bg-[#C2410C] text-white shadow-sm' : 'bg-white text-[#57534E] border border-[#D6D3D1] hover:bg-[#F5F5F4]'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {libTab === 'sfx' ? (
+        <div className="space-y-4">
+          <div className="bg-white border border-[#D6D3D1] rounded-2xl p-5 space-y-3">
+            <h3 className="font-semibold text-sm text-[#1C1917]">Unggah Sound Effect (maks 5MB)</h3>
+            <input ref={sfxInputRef} type="file" accept={ALLOWED_EXTENSIONS.join(',')} className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) handleSfxPicked(f); }} />
+            <button type="button" onClick={() => sfxInputRef.current?.click()} disabled={sfxUploading} className="w-full py-6 border-2 border-dashed border-[#D6D3D1] hover:border-[#C2410C] rounded-xl text-center transition-colors disabled:opacity-50">
+              {sfxUploading ? (
+                <span className="flex items-center justify-center space-x-2 text-sm text-[#C2410C] font-semibold">
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Mengunggah...</span>
+                </span>
+              ) : (
+                <span className="text-xs text-[#78716C]">Klik untuk memilih berkas<br /><span className="font-mono text-[11px]">{ALLOWED_EXTENSIONS.join('  ')}</span></span>
+              )}
+            </button>
+            <p className="text-[11px] text-[#78716C]">SFX dipakai sebagai penanda momen di Clip Studio (tab Audio) atau otomatis saat skor hook tinggi.</p>
+          </div>
+
+          <div className="space-y-3">
+            <h3 className="font-semibold text-base text-[#1C1917]">Sound Effects ({sfxList.length})</h3>
+            {sfxLoading ? (
+              <div className="bg-white border border-[#D6D3D1] rounded-2xl p-12 text-center">
+                <Loader2 className="w-6 h-6 animate-spin text-[#C2410C] mx-auto" />
+              </div>
+            ) : sfxList.length === 0 ? (
+              <div className="bg-white border border-dashed border-[#D6D3D1] rounded-2xl p-12 text-center space-y-2">
+                <p className="text-sm text-[#78716C]">Belum ada SFX. Unggah whoosh, ding, applause favoritmu.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {sfxList.map((sfx) => (
+                  <div key={sfx.id} className="bg-white border border-[#D6D3D1] rounded-2xl p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1">
+                        <h4 className="font-semibold text-sm text-[#1C1917] truncate">🔔 {sfx.title}</h4>
+                        <div className="flex items-center space-x-3 mt-1.5 text-[11px] text-[#78716C] font-mono">
+                          <span className="flex items-center space-x-1">
+                            <Clock className="w-3 h-3" />
+                            <span>{formatDuration(sfx.duration_seconds)}</span>
+                          </span>
+                          <span>•</span>
+                          <span>{formatSize(sfx.file_size_bytes)}</span>
+                        </div>
+                        <audio controls preload="none" src={sfxApi.getStreamUrl(sfx)} className="w-full mt-3 h-8" />
+                      </div>
+                      <button type="button" onClick={() => handleDeleteSfx(sfx)} className="p-1.5 text-[#78716C] hover:text-[#DC2626] hover:bg-red-50 rounded-lg transition-colors shrink-0" title="Hapus SFX">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+      <>
       {/* Add methods */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Upload file */}
@@ -363,6 +490,8 @@ export const AudioLibraryPage: React.FC<AudioLibraryPageProps> = ({ onUseAsBgm }
           </div>
         )}
       </div>
+      </>
+      )}
     </div>
   );
 };

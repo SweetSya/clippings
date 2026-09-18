@@ -1,12 +1,13 @@
 export interface VideoItem {
   id: string;
   original_name: string;
-  status: 'UPLOADED' | 'EXTRACTING_AUDIO' | 'TRANSCRIBING' | 'ANALYZING' | 'READY' | 'FAILED';
+  status: 'DOWNLOADING' | 'UPLOADED' | 'EXTRACTING_AUDIO' | 'TRANSCRIBING' | 'ANALYZING' | 'READY' | 'FAILED';
   duration_seconds: number;
   file_size_bytes: number;
   language?: string;
   thumbnail_url: string;
   description?: string;
+  video_type?: string;
   auto_generate_shorts?: boolean;
   clips_count?: number;
   rendered_count?: number;
@@ -18,6 +19,7 @@ export interface VideoStatus {
   status: string;
   error_message?: string;
   job_progress: {
+    download?: number;
     audio_extract?: number;
     transcribe?: number;
     analyze?: number;
@@ -32,6 +34,10 @@ export interface ClipItem {
   end_time_seconds: number;
   duration_seconds: number;
   hook_score: number;
+  composite_score?: number;
+  speech_rate?: number;
+  keyword_density?: number;
+  face_coverage?: number;
   virality_reason?: string;
   is_selected: boolean;
   narration_text?: string;
@@ -143,6 +149,11 @@ export interface SystemSettings {
   llm_configured: boolean;
   llm_connected?: boolean;
   llm_prompt?: string;
+  llm_two_pass_enabled?: boolean;
+  llm_chunk_strategy?: string;
+  llm_vision_enabled?: boolean;
+  llm_vision_model?: string;
+  llm_vision_weight?: number;
   gdrive_auth_type?: string;
   gdrive_folder_id?: string;
   gdrive_configured: boolean;
@@ -163,7 +174,11 @@ export interface HealthStatus {
   ffmpeg: string;
 }
 
-export type SubtitleMotionType = 'single_word_pop' | 'karaoke' | 'background_box' | 'typewriter' | 'slide_up';
+export type SubtitleMotionType = 'single_word_pop' | 'karaoke' | 'background_box' | 'typewriter' | 'slide_up' | 'bounce_in' | 'zoom_flash' | 'glitch_reveal';
+export type VideoFilter = 'none' | 'cinematic' | 'vivid' | 'warm' | 'cool' | 'drama' | 'vintage';
+export type FramingLayout = 'single' | 'pip_full' | 'pip_center' | 'split_top_bottom' | 'split_bottom_top' | 'fit_16_9_center' | 'overlay_pip' | 'streamer_face_top' | 'streamer_face_bottom';
+export type PersonShape = 'circle' | 'rounded' | 'rectangle';
+export type ScreenMode = 'full' | 'center';
 
 export interface TextPreset {
   id: string;
@@ -173,6 +188,28 @@ export interface TextPreset {
   crop_offset_x?: number;
   smart_deadzone?: number;
   smart_pan_seconds?: number;
+  framing_layout?: FramingLayout;
+  screen_mode?: ScreenMode;
+  person_shape?: PersonShape;
+  person_scale?: number;
+  person_offset_x?: number;
+  person_offset_y?: number;
+  screen_offset_x?: number;
+  screen_offset_y?: number;
+  screen_scale?: number;
+  screen_aspect?: '16:9' | '9:16' | string;
+  video_filter?: VideoFilter | string;
+  enable_intro_title?: boolean;
+  intro_title_duration?: number;
+  intro_title_style?: string;
+  enable_outro_cta?: boolean;
+  outro_cta_text?: string;
+  outro_cta_duration?: number;
+  enable_lower_third?: boolean;
+  lower_third_text?: string | null;
+  sticker_path?: string | null;
+  sticker_position?: string;
+  sticker_scale?: number;
   font: string;
   font_size: number;
   primary_color: string;
@@ -189,12 +226,15 @@ export interface TextPreset {
   enable_dynamic_scaling?: boolean;
   enable_emoji_injection?: boolean;
   glow_effect?: boolean;
+  enable_vocal_dynamics?: boolean;
   audio_track_id?: string | null;
   bgm_volume?: number;
   audio_mode?: AudioMode;
   use_voiceover?: boolean;
   narration_voice?: string;
   narration_style?: NarrationStyle;
+  category?: string;
+  thumbnail_preview?: string | null;
   is_builtin: boolean;
   created_at: string;
 }
@@ -206,6 +246,28 @@ export interface TextPresetPayload {
   crop_offset_x?: number;
   smart_deadzone?: number;
   smart_pan_seconds?: number;
+  framing_layout?: FramingLayout;
+  screen_mode?: ScreenMode;
+  person_shape?: PersonShape;
+  person_scale?: number;
+  person_offset_x?: number;
+  person_offset_y?: number;
+  screen_offset_x?: number;
+  screen_offset_y?: number;
+  screen_scale?: number;
+  screen_aspect?: '16:9' | '9:16' | string;
+  video_filter?: VideoFilter | string;
+  enable_intro_title?: boolean;
+  intro_title_duration?: number;
+  intro_title_style?: string;
+  enable_outro_cta?: boolean;
+  outro_cta_text?: string;
+  outro_cta_duration?: number;
+  enable_lower_third?: boolean;
+  lower_third_text?: string | null;
+  sticker_path?: string | null;
+  sticker_position?: string;
+  sticker_scale?: number;
   font: string;
   font_size: number;
   primary_color: string;
@@ -222,12 +284,15 @@ export interface TextPresetPayload {
   enable_dynamic_scaling?: boolean;
   enable_emoji_injection?: boolean;
   glow_effect?: boolean;
+  enable_vocal_dynamics?: boolean;
   audio_track_id?: string | null;
   bgm_volume?: number;
   audio_mode?: AudioMode;
   use_voiceover?: boolean;
   narration_voice?: string;
   narration_style?: NarrationStyle;
+  category?: string;
+  thumbnail_preview?: string | null;
 }
 
 export interface AudioTrack {
@@ -256,4 +321,24 @@ export interface SynthesizeResult {
 export type AudioMode = 'mix' | 'replace' | 'original';
 
 export type NarrationStyle = 'hook_story' | 'summary' | 'educational';
+
+export interface WahaStatus {
+  enabled: boolean;
+  api_url: string;
+  session_name: string;
+  session_status: 'STOPPED' | 'STARTING' | 'SCAN_QR_CODE' | 'SCAN_QR' | 'WORKING' | 'FAILED';
+  qr_code?: string | null;
+  sync_token: string;
+  paired_chat_id?: string | null;
+  paired_chat_name?: string | null;
+  paired_chat_type?: 'direct' | 'group' | null;
+  paired_at?: string | null;
+}
+
+export interface WahaConfig {
+  api_url?: string;
+  api_key?: string;
+  session_name?: string;
+  enabled?: boolean;
+}
 

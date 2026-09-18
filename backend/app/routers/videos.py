@@ -20,14 +20,15 @@ from app.schemas import (
     YouTubeInfoResponse,
     YouTubeDownloadRequest,
     BatchDeleteRequest,
-    BatchActionResponse
+    BatchActionResponse,
+    ReanalyzeRequest
 )
 from app.core.security import get_current_session, get_media_session
 from app.config import settings
-from app.services.storage_service import resolve_path, delete_video_artifacts
+from app.services.storage_service import resolve_path, delete_video_artifacts, hash_file_head
 from app.services.ffmpeg_service import probe_video, generate_thumbnail
 from app.services.youtube_service import get_youtube_info, download_youtube_video
-from app.services.pipeline import default_render_settings
+from app.services.pipeline import default_render_settings, try_reuse_transcript
 
 router = APIRouter(prefix="/videos", tags=["Videos"])
 
@@ -84,7 +85,7 @@ async def upload_video(
     except Exception:
         pass
 
-    # 4. Insert into database
+    # 4. Insert into database (sertakan hash dedup transkrip)
     video_record = SourceVideo(
         id=video_id,
         filename=saved_filename,
@@ -94,18 +95,22 @@ async def upload_video(
         duration_seconds=duration,
         status="UPLOADED",
         description=description.strip() if description else None,
-        auto_generate_shorts=auto_generate
+        auto_generate_shorts=auto_generate,
+        file_hash=hash_file_head(abs_path)
     )
     db.add(video_record)
 
-    # 5. Automatically enqueue AUDIO_EXTRACT job
-    job = AppJob(
-        id=uuid.uuid4().hex,
-        job_type="AUDIO_EXTRACT",
-        ref_id=video_id,
-        status="QUEUED"
-    )
-    db.add(job)
+    # 5. Reuse transkrip bila berkas sama pernah diupload (skip audio/transcribe),
+    #    else enqueue AUDIO_EXTRACT seperti biasa.
+    reused = await try_reuse_transcript(db, video_record)
+    if not reused:
+        job = AppJob(
+            id=uuid.uuid4().hex,
+            job_type="AUDIO_EXTRACT",
+            ref_id=video_id,
+            status="QUEUED"
+        )
+        db.add(job)
     await db.commit()
 
     return VideoUploadResponse(
@@ -162,9 +167,8 @@ async def download_yt_video(
     video_id = uuid.uuid4().hex
     saved_filename = f"{video_id}.mp4"
     rel_path = f"uploads/{saved_filename}"
-    abs_path = resolve_path(rel_path)
 
-    # 1. Fetch info for metadata
+    # 1. Quickly probe metadata for title & duration (graceful fallback)
     try:
         info = await get_youtube_info(url)
     except Exception:
@@ -173,70 +177,45 @@ async def download_yt_video(
     title = info.get("title") or "YouTube Video"
     clean_title = re.sub(r'[\\/*?:"<>|]', "", title).strip() or "youtube_video"
     original_name = f"{clean_title}.mp4"
+    duration = float(info.get("duration_seconds") or 0.0)
 
-    # 2. Download via yt-dlp
-    try:
-        await download_youtube_video(url, abs_path, quality_pref=quality)
-    except Exception as e:
-        if os.path.exists(abs_path):
-            try:
-                os.remove(abs_path)
-            except Exception:
-                pass
-        raise HTTPException(
-            status_code=500,
-            detail={"error": {"code": "DOWNLOAD_FAILED", "message": f"Gagal mengunduh video YouTube: {str(e)}"}}
-        )
-
-    if not os.path.exists(abs_path):
-        raise HTTPException(
-            status_code=500,
-            detail={"error": {"code": "DOWNLOAD_FAILED", "message": "Berkas video hasil download tidak ditemukan."}}
-        )
-
-    total_bytes = os.path.getsize(abs_path)
-
-    # 3. Probe video metadata
-    duration = info.get("duration_seconds") or 0.0
-    try:
-        probe_res = await probe_video(abs_path)
-        if probe_res.get("duration"):
-            duration = probe_res["duration"]
-    except Exception:
-        pass
-
-    # 4. Generate thumbnail
-    thumb_rel = f"thumbnails/{video_id}.jpg"
-    thumb_path = resolve_path(thumb_rel)
-    try:
-        seek_sec = min(2.0, duration / 2.0) if duration > 0 else 1.0
-        await generate_thumbnail(abs_path, thumb_path, seek_seconds=seek_sec)
-    except Exception:
-        pass
-
-    # 5. Insert into database
+    # 2. Insert into database with status="DOWNLOADING"
     video_record = SourceVideo(
         id=video_id,
         filename=saved_filename,
         original_name=original_name,
         local_file_path=rel_path,
-        file_size_bytes=total_bytes,
+        file_size_bytes=0,
         duration_seconds=duration,
-        status="UPLOADED",
+        status="DOWNLOADING",
         description=info.get("description") or None,
         auto_generate_shorts=bool(payload.auto_generate)
     )
     db.add(video_record)
 
-    # 6. Automatically enqueue AUDIO_EXTRACT job
+    # 3. Enqueue background YOUTUBE_DOWNLOAD job
     job = AppJob(
         id=uuid.uuid4().hex,
-        job_type="AUDIO_EXTRACT",
+        job_type="YOUTUBE_DOWNLOAD",
         ref_id=video_id,
-        status="QUEUED"
+        status="QUEUED",
+        payload={
+            "url": url,
+            "quality": quality,
+            "auto_generate": bool(payload.auto_generate)
+        }
     )
     db.add(job)
     await db.commit()
+
+    return VideoUploadResponse(
+        video_id=video_id,
+        filename=saved_filename,
+        original_name=original_name,
+        duration_seconds=duration,
+        file_size_bytes=0,
+        auto_generate_shorts=bool(payload.auto_generate)
+    )
 
     return VideoUploadResponse(
         video_id=video_id,
@@ -290,6 +269,7 @@ async def list_videos(
             thumbnail_url=thumb_url,
             created_at=r.created_at.isoformat() if r.created_at else "",
             description=r.description,
+            video_type=getattr(r, "video_type", None),
             clips_count=clips_count,
             rendered_count=rendered_count,
             auto_generate_shorts=bool(r.auto_generate_shorts)
@@ -395,6 +375,61 @@ async def process_video(video_id: str, db: AsyncSession = Depends(get_db)):
 
     return {"status": "QUEUED", "video_id": video_id}
 
+@router.post("/{video_id}/reanalyze", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(get_current_session)])
+async def reanalyze_video(video_id: str, payload: ReanalyzeRequest = None, db: AsyncSession = Depends(get_db)):
+    video = await db.get(SourceVideo, video_id)
+    if not video:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"code": "VIDEO_NOT_FOUND", "message": "Video tidak ditemukan."}}
+        )
+
+    if video.status in ["EXTRACTING_AUDIO", "TRANSCRIBING", "ANALYZING", "DOWNLOADING"]:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": {"code": "ALREADY_PROCESSING", "message": "Video sedang dalam proses antrean."}}
+        )
+
+    t_path = resolve_path(f"transcripts/{video_id}.json")
+    if not os.path.exists(t_path):
+        raise HTTPException(
+            status_code=404,
+            detail={"error": {"code": "TRANSCRIPT_NOT_FOUND", "message": "Transkrip belum tersedia, proses video dulu."}}
+        )
+
+    # Hapus kandidat lama agar idempoten (RenderedShort ikut terhapus via cascade)
+    old_clips = (await db.execute(select(ClipCandidate).where(ClipCandidate.video_id == video_id))).scalars().all()
+    for clip in old_clips:
+        # Hapus RenderedShort terkait eksplisit agar tak yatim di SQLite tanpa FK enforcement
+        old_shorts = (await db.execute(select(RenderedShort).where(RenderedShort.clip_id == clip.id))).scalars().all()
+        for s in old_shorts:
+            await db.delete(s)
+        await db.delete(clip)
+
+    video.status = "ANALYZING"
+    video.error_message = None
+
+    job_payload = {}
+    if payload:
+        if payload.min_dur is not None:
+            job_payload["min_dur"] = float(payload.min_dur)
+        if payload.max_dur is not None:
+            job_payload["max_dur"] = float(payload.max_dur)
+        if payload.custom_prompt_override:
+            job_payload["custom_prompt_override"] = payload.custom_prompt_override.strip()[:4000]
+
+    job = AppJob(
+        id=uuid.uuid4().hex,
+        job_type="LLM_ANALYZE",
+        ref_id=video_id,
+        status="QUEUED",
+        payload=job_payload or None
+    )
+    db.add(job)
+    await db.commit()
+
+    return {"status": "QUEUED", "video_id": video_id, "overrides": job_payload}
+
 @router.get("/{video_id}/status", response_model=VideoStatusResponse, dependencies=[Depends(get_current_session)])
 async def get_video_status(video_id: str, db: AsyncSession = Depends(get_db)):
     video = await db.get(SourceVideo, video_id)
@@ -405,17 +440,23 @@ async def get_video_status(video_id: str, db: AsyncSession = Depends(get_db)):
         )
 
     # Calculate sub-job progress
-    progress_map = {"audio_extract": 0, "transcribe": 0, "analyze": 0}
-    if video.status == "EXTRACTING_AUDIO":
+    progress_map = {"download": 0, "audio_extract": 0, "transcribe": 0, "analyze": 0}
+    if video.status == "DOWNLOADING":
+        progress_map["download"] = 50
+    elif video.status == "EXTRACTING_AUDIO":
+        progress_map["download"] = 100
         progress_map["audio_extract"] = 50
     elif video.status == "TRANSCRIBING":
+        progress_map["download"] = 100
         progress_map["audio_extract"] = 100
         progress_map["transcribe"] = 50
     elif video.status == "ANALYZING":
+        progress_map["download"] = 100
         progress_map["audio_extract"] = 100
         progress_map["transcribe"] = 100
         progress_map["analyze"] = 50
     elif video.status == "READY":
+        progress_map["download"] = 100
         progress_map["audio_extract"] = 100
         progress_map["transcribe"] = 100
         progress_map["analyze"] = 100
@@ -453,7 +494,9 @@ async def download_transcript_json(video_id: str, db: AsyncSession = Depends(get
 
 @router.get("/{video_id}/clips", response_model=list[ClipCandidateResponse], dependencies=[Depends(get_current_session)])
 async def get_video_clips(video_id: str, db: AsyncSession = Depends(get_db)):
-    stmt = select(ClipCandidate).where(ClipCandidate.video_id == video_id).order_by(desc(ClipCandidate.hook_score))
+    # Urut composite (COALESCE ke hook_score untuk baris lama yang composite-nya 0)
+    effective_score = func.coalesce(func.nullif(ClipCandidate.composite_score, 0), ClipCandidate.hook_score)
+    stmt = select(ClipCandidate).where(ClipCandidate.video_id == video_id).order_by(desc(effective_score))
     clips = (await db.execute(stmt)).scalars().all()
 
     return [
@@ -465,6 +508,10 @@ async def get_video_clips(video_id: str, db: AsyncSession = Depends(get_db)):
             end_time_seconds=c.end_time_seconds,
             duration_seconds=c.duration_seconds,
             hook_score=c.hook_score,
+            composite_score=c.composite_score or 0,
+            speech_rate=c.speech_rate or 0.0,
+            keyword_density=c.keyword_density or 0.0,
+            face_coverage=c.face_coverage or 0.0,
             virality_reason=c.virality_reason,
             is_selected=c.is_selected,
             created_at=c.created_at.isoformat() if c.created_at else ""

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Plus,
   Trash2,
@@ -12,6 +12,10 @@ import {
   Type,
   Music,
   Mic,
+  RefreshCw,
+  Copy,
+  Download,
+  Upload,
 } from 'lucide-react';
 import { presetsApi } from '../services/api';
 import { SubtitleFrame } from '../components/SubtitleFrame';
@@ -23,6 +27,9 @@ export const PresetPage: React.FC = () => {
   const [selectedPreset, setSelectedPreset] = useState<TextPreset | null>(null);
   const [presets, setPresets] = useState<TextPreset[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshingBuiltins, setRefreshingBuiltins] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   const showNotification = (type: 'success' | 'error', message: string) => {
@@ -39,6 +46,19 @@ export const PresetPage: React.FC = () => {
       console.error('Gagal memuat preset', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleResetBuiltins = async () => {
+    setRefreshingBuiltins(true);
+    try {
+      const data = await presetsApi.resetBuiltins();
+      setPresets(data);
+      showNotification('success', 'Preset bawaan berhasil diperbarui ke versi terlengkap!');
+    } catch (err: any) {
+      showNotification('error', 'Gagal memperbarui preset bawaan.');
+    } finally {
+      setRefreshingBuiltins(false);
     }
   };
 
@@ -72,6 +92,53 @@ export const PresetPage: React.FC = () => {
     }
   };
 
+  const handleExport = async (preset: TextPreset) => {
+    try {
+      const data = await presetsApi.exportPreset(preset.id);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `preset-${preset.name.replace(/[\\/*?:"<>|]/g, '').trim().replace(/\s+/g, '-').toLowerCase() || preset.id}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showNotification('success', `Preset "${preset.name}" diekspor.`);
+    } catch (err: any) {
+      showNotification('error', err.response?.data?.detail || 'Gagal mengekspor preset.');
+    }
+  };
+
+  const handleDuplicate = async (preset: TextPreset) => {
+    try {
+      const copy = await presetsApi.duplicate(preset.id);
+      showNotification('success', `Preset "${copy.name}" berhasil diduplikat.`);
+      await fetchPresets();
+    } catch (err: any) {
+      showNotification('error', err.response?.data?.detail || 'Gagal menduplikat preset.');
+    }
+  };
+
+  const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const imported = await presetsApi.importPreset(parsed);
+      showNotification('success', `Preset "${imported.name}" berhasil diimpor.`);
+      await fetchPresets();
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      showNotification('error', typeof detail === 'string' ? detail : 'File JSON preset tidak valid.');
+    } finally {
+      setImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
   // If user is editing or creating, render the dedicated PresetEditorPage!
   if (viewMode === 'editor') {
     return (
@@ -93,6 +160,28 @@ export const PresetPage: React.FC = () => {
 
   const builtins = presets.filter((p) => p.is_builtin);
   const customs = presets.filter((p) => !p.is_builtin);
+  const [categoryFilter, setCategoryFilter] = useState('semua');
+
+  const CATEGORY_LABELS: Record<string, string> = {
+    semua: 'Semua',
+    text: 'Teks',
+    full: 'Full',
+    streamer: 'Streamer',
+    podcast: 'Podcast',
+    educational: 'Edukasi',
+    motivational: 'Motivasi',
+    gaming: 'Gaming',
+  };
+
+  const filteredBuiltins = categoryFilter === 'semua'
+    ? builtins
+    : builtins.filter((p) => (p.category || 'text') === categoryFilter);
+
+  const builtinsByCategory = filteredBuiltins.reduce<Record<string, TextPreset[]>>((acc, p) => {
+    const cat = p.category || 'text';
+    (acc[cat] = acc[cat] || []).push(p);
+    return acc;
+  }, {});
 
   const renderPresetCard = (preset: TextPreset) => (
     <div
@@ -111,6 +200,28 @@ export const PresetPage: React.FC = () => {
           isUppercase={preset.is_uppercase}
           position={preset.subtitle_position}
           marginV={preset.margin_v}
+          motionType={preset.motion_type}
+          highlightBgColor={preset.highlight_bg_color}
+          enableKeywordColor={preset.enable_keyword_color}
+          keywordColor={preset.keyword_color}
+          enableDynamicScaling={preset.enable_dynamic_scaling}
+          enableEmojiInjection={preset.enable_emoji_injection}
+          glowEffect={preset.glow_effect}
+          framingLayout={preset.framing_layout}
+          screenMode={preset.screen_mode}
+          personShape={preset.person_shape}
+          personScale={preset.person_scale}
+          personOffsetX={preset.person_offset_x}
+          personOffsetY={preset.person_offset_y}
+          screenOffsetX={preset.screen_offset_x}
+          screenOffsetY={preset.screen_offset_y}
+          screenScale={preset.screen_scale}
+          screenAspect={preset.screen_aspect}
+          enableVocalDynamics={preset.enable_vocal_dynamics}
+          videoFilter={preset.video_filter}
+          overlayIntro={preset.enable_intro_title ? preset.name : null}
+          overlayOutro={preset.enable_outro_cta ? preset.outro_cta_text || "Follow untuk lebih banyak!" : null}
+          overlayLowerThird={preset.enable_lower_third ? preset.lower_third_text || "Nama" : null}
           className="rounded-xl shadow-xs"
         />
       </div>
@@ -129,6 +240,11 @@ export const PresetPage: React.FC = () => {
                   Kustom
                 </span>
               )}
+              {preset.category && preset.category !== 'text' && (
+                <span className="px-1.5 py-0.5 bg-violet-100 text-violet-700 text-[10px] font-semibold rounded-md uppercase tracking-wide shrink-0">
+                  {preset.category}
+                </span>
+              )}
             </div>
             {preset.description && (
               <p className="text-xs text-[#78716C] line-clamp-2 mt-0.5">{preset.description}</p>
@@ -143,6 +259,22 @@ export const PresetPage: React.FC = () => {
               title={preset.is_builtin ? 'Duplikasi & Sesuaikan' : 'Ubah Preset di Halaman Editor'}
             >
               <Pencil className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDuplicate(preset)}
+              className="p-1.5 text-[#78716C] hover:text-[#C2410C] hover:bg-[#F5F5F4] rounded-lg transition-colors"
+              title="Duplikat preset"
+            >
+              <Copy className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => handleExport(preset)}
+              className="p-1.5 text-[#78716C] hover:text-[#C2410C] hover:bg-[#F5F5F4] rounded-lg transition-colors"
+              title="Export preset ke JSON"
+            >
+              <Download className="w-4 h-4" />
             </button>
             {!preset.is_builtin && (
               <button
@@ -179,6 +311,12 @@ export const PresetPage: React.FC = () => {
             <Music className="w-3 h-3 text-[#C2410C]" />
             <span>BGM {Math.round((preset.bgm_volume ?? 0.2) * 100)}%</span>
           </span>
+
+          {(preset.video_filter ?? 'none') !== 'none' && (
+            <span className="px-2 py-0.5 bg-violet-50 text-violet-700 font-medium rounded-md border border-violet-200">
+              🎬 {preset.video_filter}
+            </span>
+          )}
 
           {preset.use_voiceover && (
             <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 font-medium rounded-md border border-emerald-200 flex items-center space-x-1">
@@ -254,14 +392,38 @@ export const PresetPage: React.FC = () => {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={openCreatePage}
-          className="px-4 py-2.5 bg-[#C2410C] hover:bg-[#9A3412] text-white text-xs font-bold rounded-xl transition-all shadow-md shadow-[#C2410C]/20 flex items-center space-x-2 self-start sm:self-auto"
-        >
-          <Plus className="w-4 h-4" />
-          <span>Tambah Preset Baru</span>
-        </button>
+        <div className="flex items-center space-x-2.5 self-start sm:self-auto">
+          <input ref={fileInputRef} type="file" accept=".json,application/json" className="hidden" onChange={handleImportFile} />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            className="px-3.5 py-2.5 bg-[#F5F5F4] hover:bg-[#E7E5E4] text-[#57534E] hover:text-[#1C1917] text-xs font-bold rounded-xl transition-all border border-[#D6D3D1] flex items-center space-x-1.5 disabled:opacity-50"
+            title="Impor preset dari file JSON"
+          >
+            {importing ? <Loader2 className="w-3.5 h-3.5 animate-spin text-[#C2410C]" /> : <Upload className="w-3.5 h-3.5 text-[#C2410C]" />}
+            <span>Import</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleResetBuiltins}
+            disabled={refreshingBuiltins}
+            className="px-3.5 py-2.5 bg-[#F5F5F4] hover:bg-[#E7E5E4] text-[#57534E] hover:text-[#1C1917] text-xs font-bold rounded-xl transition-all border border-[#D6D3D1] flex items-center space-x-1.5 disabled:opacity-50"
+            title="Sinkronkan dan muat ulang semua preset bawaan sistem ke versi terlengkap"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 text-[#C2410C] ${refreshingBuiltins ? 'animate-spin' : ''}`} />
+            <span>Refresh Preset Bawaan</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={openCreatePage}
+            className="px-4 py-2.5 bg-[#C2410C] hover:bg-[#9A3412] text-white text-xs font-bold rounded-xl transition-all shadow-md shadow-[#C2410C]/20 flex items-center space-x-2"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Tambah Preset Baru</span>
+          </button>
+        </div>
       </div>
 
       {/* Preset List Grid */}
@@ -291,15 +453,43 @@ export const PresetPage: React.FC = () => {
           )}
 
           <div className="space-y-3">
-            <h3 className="font-bold text-sm text-[#1C1917] flex items-center space-x-2">
-              <span>Preset Bawaan Sistem</span>
-              <span className="px-2 py-0.5 bg-[#E7E5E4] text-[#57534E] rounded-full text-xs font-mono">
-                {builtins.length}
-              </span>
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {builtins.map(renderPresetCard)}
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <h3 className="font-bold text-sm text-[#1C1917] flex items-center space-x-2">
+                <span>Preset Bawaan Sistem</span>
+                <span className="px-2 py-0.5 bg-[#E7E5E4] text-[#57534E] rounded-full text-xs font-mono">
+                  {builtins.length}
+                </span>
+              </h3>
+              <div className="flex flex-wrap gap-1.5">
+                {Object.entries(CATEGORY_LABELS).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setCategoryFilter(id)}
+                    className={`px-2.5 py-1 text-[11px] font-bold rounded-full transition-all ${
+                      categoryFilter === id
+                        ? 'bg-[#C2410C] text-white'
+                        : 'bg-[#F5F5F4] text-[#57534E] hover:bg-[#E7E5E4]'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
+            {Object.entries(builtinsByCategory).map(([cat, list]) => (
+              <div key={cat} className="space-y-2">
+                <h4 className="font-semibold text-xs text-[#78716C] uppercase tracking-wider">
+                  {CATEGORY_LABELS[cat] || cat} ({list.length})
+                </h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {list.map(renderPresetCard)}
+                </div>
+              </div>
+            ))}
+            {filteredBuiltins.length === 0 && (
+              <p className="text-xs text-[#78716C]">Tidak ada preset bawaan di kategori ini.</p>
+            )}
           </div>
         </div>
       )}

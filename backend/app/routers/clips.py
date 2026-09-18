@@ -3,14 +3,18 @@ import json
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
-from app.models import ClipCandidate, RenderedShort, SourceVideo, AppJob, AppSetting
+from app.models import ClipCandidate, RenderedShort, SourceVideo, AppJob, AppSetting, TextPreset
 from app.schemas import (
     ClipCandidateResponse,
     ClipUpdateRequest,
     ClipRenderRequest,
+    BatchClipRenderRequest,
+    BatchActionResponse,
     ReframePreviewResponse,
+    FaceAnchorResponse,
     GenerateNarrationRequest,
     GenerateNarrationResponse,
     SynthesizeVoiceRequest,
@@ -23,9 +27,12 @@ from app.services.storage_service import resolve_path
 from app.services.ffmpeg_service import probe_video
 from app.services.llm_service import generate_clip_narration
 from app.services.tts_service import generate_speech
+from app.services.pipeline import default_render_settings
 from app.services.reframe_service import (
     build_preview,
     get_head_samples,
+    analyze_face_anchor,
+    FACE_ANCHOR_LOW_COVERAGE,
     DEFAULT_DEADZONE,
     DEFAULT_PAN_SECONDS,
 )
@@ -42,6 +49,10 @@ def _to_clip_response(clip: ClipCandidate) -> ClipCandidateResponse:
         end_time_seconds=clip.end_time_seconds,
         duration_seconds=clip.duration_seconds,
         hook_score=clip.hook_score,
+        composite_score=clip.composite_score or 0,
+        speech_rate=clip.speech_rate or 0.0,
+        keyword_density=clip.keyword_density or 0.0,
+        face_coverage=clip.face_coverage or 0.0,
         virality_reason=clip.virality_reason,
         is_selected=clip.is_selected,
         narration_text=clip.narration_text,
@@ -82,6 +93,67 @@ async def update_clip(
     return _to_clip_response(clip)
 
 
+@router.post("/batch-render", response_model=BatchActionResponse, status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(get_current_session)])
+async def batch_render_clips(
+    payload: BatchClipRenderRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Queue rendering for multiple candidate clips at once in the background.
+    """
+    if not payload.clip_ids:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": {"code": "EMPTY_LIST", "message": "Daftar ID klip tidak boleh kosong."}}
+        )
+
+    common_settings = payload.render_settings.model_dump() if payload.render_settings else default_render_settings()
+    success_count = 0
+
+    for clip_id in payload.clip_ids:
+        clip = await db.get(ClipCandidate, clip_id)
+        if not clip:
+            continue
+
+        short_id = uuid.uuid4().hex
+        out_filename = f"{short_id}_9x16.mp4"
+        rel_path = f"exports/{out_filename}"
+
+        clip_settings = dict(common_settings)
+        if clip.narration_text and not clip_settings.get("narration_text"):
+            clip_settings["narration_text"] = clip.narration_text
+            clip_settings["narration_voice"] = clip.narration_voice
+            clip_settings["use_voiceover"] = True
+
+        short = RenderedShort(
+            id=short_id,
+            clip_id=clip_id,
+            output_filename=out_filename,
+            local_path=rel_path,
+            render_settings=clip_settings,
+            render_status="PENDING",
+            render_progress=0
+        )
+        db.add(short)
+
+        job = AppJob(
+            id=uuid.uuid4().hex,
+            job_type="RENDER",
+            ref_id=short_id,
+            status="QUEUED",
+            payload=clip_settings
+        )
+        db.add(job)
+        success_count += 1
+
+    await db.commit()
+    return BatchActionResponse(
+        success_count=success_count,
+        failed_count=len(payload.clip_ids) - success_count,
+        message=f"{success_count} klip berhasil dimasukkan ke antrean render background."
+    )
+
+
 @router.post("/{clip_id}/render", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(get_current_session)])
 async def trigger_render_clip(
     clip_id: str,
@@ -96,29 +168,7 @@ async def trigger_render_clip(
     out_filename = f"{short_id}_9x16.mp4"
     rel_path = f"exports/{out_filename}"
 
-    settings_dict = {
-        "crop_mode": payload.crop_mode,
-        "crop_offset_x": payload.crop_offset_x,
-        "smart_deadzone": payload.smart_deadzone,
-        "smart_pan_seconds": payload.smart_pan_seconds,
-        "smart_snap": payload.smart_snap,
-        "preset_id": payload.preset_id,
-        "font": payload.font,
-        "font_size": payload.font_size,
-        "active_color": payload.active_color,
-        "primary_color": payload.primary_color,
-        "subtitle_position": payload.subtitle_position or "bottom",
-        "margin_v": payload.margin_v,
-        "outline_width": payload.outline_width,
-        "shadow_depth": payload.shadow_depth,
-        "is_uppercase": payload.is_uppercase,
-        "use_voiceover": payload.use_voiceover,
-        "narration_text": payload.narration_text,
-        "narration_voice": payload.narration_voice,
-        "audio_track_id": payload.audio_track_id,
-        "bgm_volume": payload.bgm_volume,
-        "audio_mode": payload.audio_mode
-    }
+    settings_dict = payload.model_dump()
 
     short = RenderedShort(
         id=short_id,
@@ -337,3 +387,55 @@ async def get_reframe_preview(
         pan_seconds=pan_seconds,
         snap=snap
     ))
+
+
+@router.post("/{clip_id}/analyze-face-anchor", response_model=FaceAnchorResponse, dependencies=[Depends(get_current_session)])
+async def analyze_clip_face_anchor(clip_id: str, db: AsyncSession = Depends(get_db)):
+    """
+    Analisis posisi wajah (Face Anchor) untuk klip ini: zona dominan + coverage
+    + rekomendasi layout/preset streamer. Coverage disimpan ke klip untuk badge.
+    Tak pernah 500 untuk kasus degradasi (model hilang/tanpa wajah → coverage 0 + warning).
+    """
+    clip = await db.get(ClipCandidate, clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="Kandidat klip tidak ditemukan.")
+
+    video = await db.get(SourceVideo, clip.video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video sumber tidak ditemukan.")
+
+    video_path = resolve_path(video.local_file_path)
+    if not os.path.exists(video_path):
+        raise HTTPException(status_code=404, detail="Berkas video tidak ditemukan di storage.")
+
+    analysis = await analyze_face_anchor(
+        video_path, clip.start_time_seconds, clip.end_time_seconds
+    )
+    coverage = float(analysis.get("face_coverage") or 0.0)
+    clip.face_coverage = coverage
+    await db.commit()
+
+    zone = str(analysis.get("dominant_zone") or "center")
+    # Rekomendasi layout streamer sadar zona (Phase 3 — 5.2).
+    streamer_layout = {"top": "streamer_face_top", "bottom": "streamer_face_bottom"}.get(zone, "single")
+
+    preset_id = await db.scalar(
+        select(TextPreset.id)
+        .where(TextPreset.is_builtin.is_(True), TextPreset.id.like("%streamer%"))
+        .order_by(TextPreset.id)
+    )
+
+    warning = None
+    if coverage < FACE_ANCHOR_LOW_COVERAGE:
+        warning = "Wajah jarang terdeteksi, smart crop mungkin kurang optimal. Pertimbangkan center crop."
+
+    return FaceAnchorResponse(
+        clip_id=clip.id,
+        dominant_zone=zone,
+        avg_cx=float(analysis.get("avg_cx") or 0.5),
+        avg_cy=float(analysis.get("avg_cy") or 0.5),
+        face_coverage=coverage,
+        recommended_layout=streamer_layout,
+        recommended_preset_id=preset_id,
+        warning=warning,
+    )

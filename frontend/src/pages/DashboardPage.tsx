@@ -28,7 +28,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onSelectVideo, onN
     fetchVideos();
     // Live polling every 3 seconds if any video is currently in progress
     const timer = setInterval(() => {
-      if (videos.some((v) => ['UPLOADED', 'EXTRACTING_AUDIO', 'TRANSCRIBING', 'ANALYZING'].includes(v.status))) {
+      if (videos.some((v) => ['DOWNLOADING', 'UPLOADED', 'EXTRACTING_AUDIO', 'TRANSCRIBING', 'ANALYZING'].includes(v.status))) {
         fetchVideos();
       }
     }, 3000);
@@ -40,39 +40,62 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onSelectVideo, onN
     try {
       await videosApi.process(id);
       await fetchVideos();
-    } catch (e) {
-      alert('Gagal memulai proses pipeline');
+    } catch (err) {
+      console.error('Gagal memproses video', err);
+    } finally {
+      setActionId(null);
+    }
+  };
+
+  const handleAutoGenerate = async (id: string) => {
+    setActionId(id);
+    try {
+      await videosApi.autoGenerate(id);
+      await fetchVideos();
+    } catch (err) {
+      console.error('Gagal mengaktifkan auto-generate', err);
     } finally {
       setActionId(null);
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm('Yakin ingin menghapus video ini dan seluruh artefaknya?')) return;
+    if (!confirm('Apakah Anda yakin ingin menghapus video sumber ini beserta transkrip dan data terkait?')) {
+      return;
+    }
     setActionId(id);
     try {
       await videosApi.deleteVideo(id);
-      setVideos((prev) => prev.filter((v) => v.id !== id));
-    } catch (e) {
-      alert('Gagal menghapus video');
+      await fetchVideos();
+    } catch (err) {
+      console.error('Gagal menghapus video', err);
     } finally {
       setActionId(null);
     }
   };
 
-  const formatDuration = (sec: number) => {
-    const mins = Math.floor(sec / 60);
-    const s = Math.floor(sec % 60);
-    return `${mins}:${s < 10 ? '0' : ''}${s}`;
+  const formatDuration = (seconds: number) => {
+    if (!seconds) return '0:00';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   const formatSize = (bytes: number) => {
+    if (!bytes) return '0 MB';
     const mb = bytes / (1024 * 1024);
     return `${mb.toFixed(1)} MB`;
   };
 
   const getStatusBadge = (status: string) => {
     switch (status) {
+      case 'DOWNLOADING':
+        return (
+          <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-cyan-100 text-cyan-800 animate-pulse">
+            <RefreshCw className="w-3 h-3 animate-spin" />
+            <span>Mengunduh Video...</span>
+          </span>
+        );
       case 'READY':
         return (
           <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-100 text-emerald-800">
@@ -227,7 +250,7 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onSelectVideo, onN
                     ) : (
                       <button
                         onClick={() => handleProcess(video.id)}
-                        disabled={actionId === video.id || ['EXTRACTING_AUDIO', 'TRANSCRIBING', 'ANALYZING'].includes(video.status)}
+                        disabled={actionId === video.id || ['DOWNLOADING', 'EXTRACTING_AUDIO', 'TRANSCRIBING', 'ANALYZING'].includes(video.status)}
                         className="px-3 py-1.5 bg-[#E7E5E4] hover:bg-[#D6D3D1] text-[#1C1917] text-xs font-semibold rounded-lg transition-all flex items-center space-x-1.5 disabled:opacity-50"
                       >
                         <RefreshCw className="w-3.5 h-3.5" />

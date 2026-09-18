@@ -40,7 +40,7 @@ import {
   RefreshCw,
   Plus,
 } from 'lucide-react';
-import { videosApi, clipsApi, shortsApi, settingsApi, presetsApi, audioApi, ttsApi } from '../services/api';
+import { videosApi, clipsApi, shortsApi, settingsApi, presetsApi, audioApi, ttsApi, sfxApi, SFXTrack } from '../services/api';
 import { SubtitleFrame } from '../components/SubtitleFrame';
 import {
   VideoItem,
@@ -54,7 +54,30 @@ import {
   NarrationStyle,
   VoiceItem,
   SubtitleMotionType,
+  FramingLayout,
+  ScreenMode,
+  PersonShape,
 } from '../types';
+
+const FONT_OPTIONS = [
+  { value: 'Poppins', label: 'Poppins (Tebal & Modern - Rekomendasi)' },
+  { value: 'Anton', label: 'Anton (Impact Shorts Tegas)' },
+  { value: 'Montserrat', label: 'Montserrat (Bold & Clean)' },
+  { value: 'Bebas Neue', label: 'Bebas Neue (All-Caps Punchy)' },
+  { value: 'Inter', label: 'Inter (Clean Sans Modern)' },
+  { value: 'Oswald', label: 'Oswald (Condensed Dynamic)' },
+  { value: 'Rubik', label: 'Rubik (Rounded Heavy)' },
+  { value: 'Outfit', label: 'Outfit (Modern Tech)' },
+  { value: 'Space Grotesk', label: 'Space Grotesk (Futuristik)' },
+  { value: 'Syne', label: 'Syne (Artistik Bold)' },
+  { value: 'Archivo Black', label: 'Archivo Black (Ultra Heavy)' },
+  { value: 'Playfair Display', label: 'Playfair Display (Serif Elegan)' },
+  { value: 'Cinzel', label: 'Cinzel (Cinematic Epic)' },
+  { value: 'Permanent Marker', label: 'Permanent Marker (Handwritten)' },
+  { value: 'Caveat', label: 'Caveat (Casual Script)' },
+  { value: 'Impact', label: 'Impact (Klasik Meme)' },
+  { value: 'Arial', label: 'Arial (Standar Universal)' },
+];
 
 interface ClipStudioPageProps {
   selectedVideoId: string | null;
@@ -100,10 +123,28 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
   // Multi-select & Batch states
   const [selectedVideoIds, setSelectedVideoIds] = useState<string[]>([]);
   const [batchProcessing, setBatchProcessing] = useState(false);
+  const [batchRenderingClips, setBatchRenderingClips] = useState(false);
 
   // Auto generate action state
   const [autoGeneratingId, setAutoGeneratingId] = useState<string | null>(null);
   const [notification, setNotification] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+
+  // Re-analyze (1.4) modal state
+  const [showReanalyzeModal, setShowReanalyzeModal] = useState(false);
+  const [reanalyzeMinDur, setReanalyzeMinDur] = useState(15);
+  const [reanalyzeMaxDur, setReanalyzeMaxDur] = useState(60);
+  const [reanalyzePrompt, setReanalyzePrompt] = useState('');
+  const [reanalyzing, setReanalyzing] = useState(false);
+
+  // Face anchor analysis (5.1) state
+  const [faceAnchor, setFaceAnchor] = useState<{
+    dominant_zone: string;
+    recommended_layout: string;
+    recommended_preset_id: string | null;
+    face_coverage: number;
+    warning: string | null;
+  } | null>(null);
+  const [analyzingFace, setAnalyzingFace] = useState(false);
 
   // System settings for AI connection check
   const [settings, setSettings] = useState<SystemSettings | null>(null);
@@ -126,6 +167,25 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
   const [smartSnap, setSmartSnap] = useState(false);
   const [reframePreview, setReframePreview] = useState<ReframePreview | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
+
+  // Multi-Layer Framing (Layar + Orang)
+  const [framingLayout, setFramingLayout] = useState<FramingLayout>('single');
+  const [screenMode, setScreenMode] = useState<ScreenMode>('full');
+  const [personShape, setPersonShape] = useState<PersonShape>('circle');
+  const [personScale, setPersonScale] = useState<number>(0.35);
+  const [personOffsetX, setPersonOffsetX] = useState(0);
+  const [personOffsetY, setPersonOffsetY] = useState(0);
+  const [screenOffsetX, setScreenOffsetX] = useState(0);
+  const [screenOffsetY, setScreenOffsetY] = useState(0);
+  const [screenScale, setScreenScale] = useState(1.0);
+  const [screenAspect, setScreenAspect] = useState<'16:9' | '9:16'>('16:9');
+  const [videoFilter, setVideoFilter] = useState('none');
+  const [ovIntro, setOvIntro] = useState(false);
+  const [ovOutro, setOvOutro] = useState(false);
+  const [ovOutroText, setOvOutroText] = useState('Follow untuk lebih banyak!');
+  const [ovLower, setOvLower] = useState(false);
+  const [ovLowerText, setOvLowerText] = useState('');
+
   const [font, setFont] = useState('Poppins');
   const [fontSize, setFontSize] = useState(44);
   const [activeColor, setActiveColor] = useState('#FFCC00'); // Gold / Amber
@@ -142,6 +202,7 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
   const [enableDynamicScaling, setEnableDynamicScaling] = useState(false);
   const [enableEmojiInjection, setEnableEmojiInjection] = useState(false);
   const [glowEffect, setGlowEffect] = useState(false);
+  const [enableVocalDynamics, setEnableVocalDynamics] = useState(false);
 
   // Control panel tab & Preset mode
   const [controlTab, setControlTab] = useState<'visual' | 'audio'>('visual');
@@ -150,6 +211,7 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
   // Presets
   const [presets, setPresets] = useState<TextPreset[]>([]);
   const [presetId, setPresetId] = useState<string | null>(null);
+  const [presetCat, setPresetCat] = useState('semua');
   const [showPresetForm, setShowPresetForm] = useState(false);
   const [presetName, setPresetName] = useState('');
   const [presetDescription, setPresetDescription] = useState('');
@@ -160,6 +222,15 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
   const [audioTrackId, setAudioTrackId] = useState<string | null>(selectedAudioTrackId ?? null);
   const [bgmVolume, setBgmVolume] = useState(0.2);
   const [audioMode, setAudioMode] = useState<AudioMode>('mix');
+
+  // Sound effects (3.2)
+  const [sfxList, setSfxList] = useState<SFXTrack[]>([]);
+  const [sfxTriggers, setSfxTriggers] = useState<{ sfx_id: string; start_t: number }[]>([]);
+  const [sfxPickId, setSfxPickId] = useState('');
+  const [sfxPickAt, setSfxPickAt] = useState(0.5);
+  const [sfxAuto, setSfxAuto] = useState(false);
+  const [sfxAutoId, setSfxAutoId] = useState('');
+  const [sfxThreshold, setSfxThreshold] = useState(90);
 
   // Voiceover / narration
   const [voices, setVoices] = useState<VoiceItem[]>([]);
@@ -192,6 +263,7 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
   useEffect(() => {
     presetsApi.list().then(setPresets).catch((e) => console.error('Gagal memuat preset', e));
     audioApi.list().then(setAudioTracks).catch((e) => console.error('Gagal memuat pustaka audio', e));
+    sfxApi.list().then(setSfxList).catch((e) => console.error('Gagal memuat SFX', e));
     ttsApi.getVoices().then(setVoices).catch((e) => console.error('Gagal memuat daftar suara', e));
   }, []);
 
@@ -210,6 +282,22 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
     if (preset.crop_mode) setCropMode(preset.crop_mode as any);
     if (preset.crop_offset_x !== undefined && preset.crop_offset_x !== null) setCropOffsetX(preset.crop_offset_x);
     if (preset.smart_deadzone !== undefined && preset.smart_deadzone !== null) setSmartDeadzone(preset.smart_deadzone);
+    if (preset.framing_layout) setFramingLayout(preset.framing_layout as FramingLayout);
+    if (preset.screen_mode) setScreenMode(preset.screen_mode as ScreenMode);
+    if (preset.person_shape) setPersonShape(preset.person_shape as PersonShape);
+    if (preset.person_scale !== undefined && preset.person_scale !== null) setPersonScale(preset.person_scale);
+    if (preset.person_offset_x !== undefined && preset.person_offset_x !== null) setPersonOffsetX(preset.person_offset_x);
+    if (preset.person_offset_y !== undefined && preset.person_offset_y !== null) setPersonOffsetY(preset.person_offset_y);
+    if (preset.screen_offset_x !== undefined && preset.screen_offset_x !== null) setScreenOffsetX(preset.screen_offset_x);
+    if (preset.screen_offset_y !== undefined && preset.screen_offset_y !== null) setScreenOffsetY(preset.screen_offset_y);
+    if (preset.screen_scale !== undefined && preset.screen_scale !== null) setScreenScale(preset.screen_scale);
+    if (preset.screen_aspect) setScreenAspect(preset.screen_aspect as any);
+    if ((preset as any).video_filter) setVideoFilter((preset as any).video_filter);
+    setOvIntro(Boolean((preset as any).enable_intro_title));
+    setOvOutro(Boolean((preset as any).enable_outro_cta));
+    if ((preset as any).outro_cta_text) setOvOutroText((preset as any).outro_cta_text);
+    setOvLower(Boolean((preset as any).enable_lower_third));
+    if ((preset as any).lower_third_text) setOvLowerText((preset as any).lower_third_text);
 
     // 2. Text & Subtitle Styling
     setFont(preset.font || 'Poppins');
@@ -228,11 +316,15 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
     if (preset.enable_dynamic_scaling !== undefined && preset.enable_dynamic_scaling !== null) setEnableDynamicScaling(Boolean(preset.enable_dynamic_scaling));
     if (preset.enable_emoji_injection !== undefined && preset.enable_emoji_injection !== null) setEnableEmojiInjection(Boolean(preset.enable_emoji_injection));
     if (preset.glow_effect !== undefined && preset.glow_effect !== null) setGlowEffect(Boolean(preset.glow_effect));
+    if (preset.enable_vocal_dynamics !== undefined && preset.enable_vocal_dynamics !== null) setEnableVocalDynamics(Boolean(preset.enable_vocal_dynamics));
 
     // 3. Audio & Voiceover
     if (preset.audio_track_id !== undefined) setAudioTrackId(preset.audio_track_id);
     if (preset.bgm_volume !== undefined && preset.bgm_volume !== null) setBgmVolume(preset.bgm_volume);
     if (preset.audio_mode) setAudioMode(preset.audio_mode);
+    setSfxAuto(Boolean((preset as any).sfx_on_hook));
+    if ((preset as any).sfx_hook_sfx_id) setSfxAutoId((preset as any).sfx_hook_sfx_id);
+    if ((preset as any).sfx_hook_threshold !== undefined && (preset as any).sfx_hook_threshold !== null) setSfxThreshold((preset as any).sfx_hook_threshold);
     if (preset.use_voiceover !== undefined && preset.use_voiceover !== null) setUseVoiceover(Boolean(preset.use_voiceover));
     if (preset.narration_voice) setNarrationVoice(preset.narration_voice);
     if (preset.narration_style) setNarrationStyle(preset.narration_style);
@@ -251,6 +343,22 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
     crop_offset_x: cropOffsetX,
     smart_deadzone: smartDeadzone,
     smart_pan_seconds: 0.5,
+    framing_layout: framingLayout,
+    screen_mode: screenMode,
+    person_shape: personShape,
+    person_scale: personScale,
+    person_offset_x: personOffsetX,
+    person_offset_y: personOffsetY,
+    screen_offset_x: screenOffsetX,
+    screen_offset_y: screenOffsetY,
+    screen_scale: screenScale,
+    screen_aspect: screenAspect,
+    video_filter: videoFilter,
+    enable_intro_title: ovIntro,
+    enable_outro_cta: ovOutro,
+    outro_cta_text: ovOutroText,
+    enable_lower_third: ovLower,
+    lower_third_text: ovLowerText || null,
     font,
     font_size: fontSize,
     primary_color: primaryColor,
@@ -267,9 +375,13 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
     enable_dynamic_scaling: enableDynamicScaling,
     enable_emoji_injection: enableEmojiInjection,
     glow_effect: glowEffect,
+    enable_vocal_dynamics: enableVocalDynamics,
     audio_track_id: audioTrackId,
     bgm_volume: bgmVolume,
     audio_mode: audioMode,
+    sfx_on_hook: sfxAuto,
+    sfx_hook_sfx_id: sfxAutoId || null,
+    sfx_hook_threshold: sfxThreshold,
     use_voiceover: useVoiceover,
     narration_voice: narrationVoice,
     narration_style: narrationStyle,
@@ -457,55 +569,74 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
 
   // When activeVideoId changes in detail view
   useEffect(() => {
-    if (!activeVideoId) return;
+    if (!activeVideoId) {
+      setSelectedClip(null);
+      setClips([]);
+      setVideoStatus(null);
+      return;
+    }
 
     const found = videos.find((v) => v.id === activeVideoId);
     if (found) setActiveVideo(found);
 
+    setSelectedClip(null);
     setLoading(true);
+
+    let isSubscribed = true;
+    let pollInterval: any = null;
 
     const loadData = async () => {
       try {
         const st = await videosApi.getStatus(activeVideoId);
+        if (!isSubscribed) return;
         setVideoStatus(st);
 
         if (st.status === 'READY') {
           const clipList = await videosApi.getClips(activeVideoId);
+          if (!isSubscribed) return;
           setClips(clipList);
-          if (clipList.length > 0) {
-            selectClipItem(clipList[0]);
-          }
         } else {
           setClips([]);
-          setSelectedClip(null);
+          // If video is still processing, poll until it becomes READY
+          if (st.status !== 'ERROR' && st.status !== 'FAILED') {
+            pollInterval = setInterval(async () => {
+              if (!isSubscribed) return;
+              try {
+                const currentStatus = await videosApi.getStatus(activeVideoId);
+                if (!isSubscribed) return;
+                setVideoStatus(currentStatus);
+                if (currentStatus.status === 'READY') {
+                  const clipList = await videosApi.getClips(activeVideoId);
+                  if (!isSubscribed) return;
+                  setClips(clipList);
+                  clearInterval(pollInterval);
+                } else if (currentStatus.status === 'ERROR' || currentStatus.status === 'FAILED') {
+                  clearInterval(pollInterval);
+                }
+              } catch (e) {
+                console.error('Error polling status', e);
+              }
+            }, 3000);
+          }
         }
       } catch (err) {
         console.error('Error loading clip data', err);
       } finally {
-        setLoading(false);
+        if (isSubscribed) setLoading(false);
       }
     };
 
     loadData();
 
-    // Poll status if currently processing
-    const interval = setInterval(async () => {
-      if (!activeVideoId) return;
-      try {
-        const st = await videosApi.getStatus(activeVideoId);
-        setVideoStatus(st);
-        if (st.status === 'READY' && clips.length === 0) {
-          loadData();
-          fetchVideos();
-        }
-      } catch (e) {}
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, [activeVideoId, videos]);
+    return () => {
+      isSubscribed = false;
+      if (pollInterval) clearInterval(pollInterval);
+    };
+  }, [activeVideoId]);
 
   const selectClipItem = (clip: ClipItem) => {
     setSelectedClip(clip);
+    setFaceAnchor(null);
     setClipTitle(clip.title);
     setStartTime(clip.start_time_seconds);
     setEndTime(clip.end_time_seconds);
@@ -552,6 +683,67 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
       showNotification('error', msg);
     } finally {
       setAutoGeneratingId(null);
+    }
+  };
+
+  const handleAnalyzeFaceAnchor = async () => {
+    if (!selectedClip || analyzingFace) return;
+    setAnalyzingFace(true);
+    try {
+      const res = await clipsApi.analyzeFaceAnchor(selectedClip.id);
+      setFaceAnchor(res);
+      setClips((prev) => prev.map((c) => (c.id === res.clip_id ? { ...c, face_coverage: res.face_coverage } : c)));
+      const zoneLabel = res.dominant_zone === 'top' ? 'ATAS' : res.dominant_zone === 'bottom' ? 'BAWAH' : 'TENGAH';
+      showNotification('success', `Wajah terdeteksi di zona ${zoneLabel} (coverage ${Math.round(res.face_coverage * 100)}%).${res.warning ? ' ' + res.warning : ''}`);
+    } catch (err: any) {
+      showNotification('error', err.response?.data?.detail || 'Gagal menganalisis posisi wajah.');
+    } finally {
+      setAnalyzingFace(false);
+    }
+  };
+
+  const applyFaceRecommendation = () => {
+    if (!faceAnchor) return;
+    if (faceAnchor.recommended_preset_id) {
+      const preset = presets.find((p) => p.id === faceAnchor.recommended_preset_id);
+      if (preset) {
+        applyPreset(preset);
+        return;
+      }
+    }
+    setFramingLayout(faceAnchor.recommended_layout as FramingLayout);
+    showNotification('success', `Layout "${faceAnchor.recommended_layout}" diterapkan.`);
+  };
+
+  const handleReanalyze = async () => {
+    if (!activeVideoId || reanalyzing) return;
+    if (reanalyzeMinDur <= 0 || reanalyzeMaxDur <= 0) {
+      showNotification('error', 'Durasi min/max harus lebih dari 0.');
+      return;
+    }
+    if (reanalyzeMaxDur < reanalyzeMinDur) {
+      showNotification('error', 'Durasi max harus >= min.');
+      return;
+    }
+    setReanalyzing(true);
+    try {
+      await videosApi.reanalyze(activeVideoId, {
+        min_dur: reanalyzeMinDur,
+        max_dur: reanalyzeMaxDur,
+        custom_prompt_override: reanalyzePrompt.trim() || undefined,
+      });
+      setShowReanalyzeModal(false);
+      setSelectedClip(null);
+      setClips([]);
+      showNotification('success', 'Analisis ulang dimulai. Halaman akan terupdate otomatis.');
+      // Refresh status → polling existing di useEffect akan menangani, tapi paksa fetch sekali
+      const st = await videosApi.getStatus(activeVideoId);
+      setVideoStatus(st);
+    } catch (err: any) {
+      const msg = err.response?.data?.detail?.error?.message || err.response?.data?.detail || err.message || 'Gagal memulai analisis ulang';
+      showNotification('error', typeof msg === 'string' ? msg : 'Gagal memulai analisis ulang');
+    } finally {
+      setReanalyzing(false);
     }
   };
 
@@ -605,6 +797,23 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
         crop_offset_x: cropOffsetX,
         smart_deadzone: smartDeadzone,
         smart_snap: smartSnap,
+        framing_layout: framingLayout,
+        screen_mode: screenMode,
+        person_shape: personShape,
+        person_scale: personScale,
+        person_offset_x: personOffsetX,
+        person_offset_y: personOffsetY,
+        screen_offset_x: screenOffsetX,
+        screen_offset_y: screenOffsetY,
+        screen_scale: screenScale,
+        screen_aspect: screenAspect,
+        video_filter: videoFilter,
+        enable_intro_title: ovIntro,
+        enable_outro_cta: ovOutro,
+        outro_cta_text: ovOutroText,
+        enable_lower_third: ovLower,
+        lower_third_text: ovLowerText || null,
+        enable_vocal_dynamics: enableVocalDynamics,
         preset_id: presetId,
         font,
         font_size: fontSize,
@@ -628,6 +837,10 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
         audio_track_id: audioTrackId,
         bgm_volume: bgmVolume,
         audio_mode: audioMode,
+        sfx_triggers: sfxTriggers.map((t) => ({ sfx_id: t.sfx_id, start_t: t.start_t, volume: 0.8 })),
+        sfx_on_hook: sfxAuto,
+        sfx_hook_sfx_id: sfxAutoId || null,
+        sfx_hook_threshold: sfxThreshold,
       });
 
       const shortId = res.short_id;
@@ -662,6 +875,70 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
     } catch (err: any) {
       showNotification('error', 'Gagal memulai render: ' + (err.response?.data?.error?.message || err.message));
       setRendering(false);
+    }
+  };
+
+  const handleBatchRenderAllClips = async () => {
+    if (clips.length === 0) return;
+    setBatchRenderingClips(true);
+    try {
+      const renderPayload = {
+        crop_mode: cropMode,
+        crop_offset_x: cropOffsetX,
+        smart_deadzone: smartDeadzone,
+        smart_pan_seconds: 0.5,
+        smart_snap: smartSnap,
+        framing_layout: framingLayout,
+        screen_mode: screenMode,
+        person_shape: personShape,
+        person_scale: personScale,
+        person_offset_x: personOffsetX,
+        person_offset_y: personOffsetY,
+        screen_offset_x: screenOffsetX,
+        screen_offset_y: screenOffsetY,
+        screen_scale: screenScale,
+        screen_aspect: screenAspect,
+        video_filter: videoFilter,
+        enable_intro_title: ovIntro,
+        enable_outro_cta: ovOutro,
+        outro_cta_text: ovOutroText,
+        enable_lower_third: ovLower,
+        lower_third_text: ovLowerText || null,
+        enable_vocal_dynamics: enableVocalDynamics,
+        preset_id: presetId,
+        font,
+        font_size: fontSize,
+        active_color: activeColor,
+        primary_color: primaryColor,
+        subtitle_position: subtitlePosition,
+        margin_v: marginV,
+        outline_width: outlineWidth,
+        shadow_depth: shadowDepth,
+        is_uppercase: isUppercase,
+        motion_type: motionType,
+        highlight_bg_color: highlightBgColor,
+        enable_keyword_color: enableKeywordColor,
+        keyword_color: keywordColor,
+        enable_dynamic_scaling: enableDynamicScaling,
+        enable_emoji_injection: enableEmojiInjection,
+        glow_effect: glowEffect,
+        use_voiceover: useVoiceover,
+        narration_voice: narrationVoice,
+        audio_track_id: audioTrackId,
+        bgm_volume: bgmVolume,
+        audio_mode: audioMode,
+        sfx_triggers: sfxTriggers.map((t) => ({ sfx_id: t.sfx_id, start_t: t.start_t, volume: 0.8 })),
+        sfx_on_hook: sfxAuto,
+        sfx_hook_sfx_id: sfxAutoId || null,
+        sfx_hook_threshold: sfxThreshold,
+      };
+
+      const res = await clipsApi.batchRender(clips.map((c) => c.id), renderPayload);
+      showNotification('success', `Berhasil! ${res.success_count} kandidat klip telah dimasukkan ke antrean render background.`);
+    } catch (err: any) {
+      showNotification('error', 'Gagal mengantrekan render batch: ' + (err.response?.data?.error?.message || err.message));
+    } finally {
+      setBatchRenderingClips(false);
     }
   };
 
@@ -817,6 +1094,49 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
             >
               <X className="w-4 h-4" />
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Analisis Ulang (1.4) */}
+      {showReanalyzeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => !reanalyzing && setShowReanalyzeModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-lg text-[#1C1917] flex items-center gap-2">
+                <RefreshCw className="w-5 h-5 text-[#C2410C]" />
+                Analisis Ulang Klip
+              </h3>
+              <button type="button" onClick={() => !reanalyzing && setShowReanalyzeModal(false)} className="p-1 rounded-lg hover:bg-[#F5F5F4] text-[#78716C]">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <p className="text-xs text-[#78716C]">
+              Kandidat lama akan dihapus dan diganti hasil baru. Transkrip dipakai ulang, tanpa upload ulang.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-[#78716C] uppercase tracking-wider mb-1">Min durasi (s)</label>
+                <input type="number" min={1} value={reanalyzeMinDur} onChange={(e) => setReanalyzeMinDur(parseFloat(e.target.value) || 0)} className="w-full px-3 py-2 bg-[#F5F5F4] border border-[#D6D3D1] rounded-xl text-sm font-mono focus:border-[#C2410C] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-[#78716C] uppercase tracking-wider mb-1">Max durasi (s)</label>
+                <input type="number" min={1} value={reanalyzeMaxDur} onChange={(e) => setReanalyzeMaxDur(parseFloat(e.target.value) || 0)} className="w-full px-3 py-2 bg-[#F5F5F4] border border-[#D6D3D1] rounded-xl text-sm font-mono focus:border-[#C2410C] outline-none" />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-[#78716C] uppercase tracking-wider mb-1">Prompt kustom (opsional)</label>
+              <textarea value={reanalyzePrompt} onChange={(e) => setReanalyzePrompt(e.target.value)} rows={3} placeholder="Contoh: fokus ke momen lucu & kontroversial..." className="w-full px-3 py-2 bg-[#F5F5F4] border border-[#D6D3D1] rounded-xl text-sm focus:border-[#C2410C] outline-none resize-none" />
+            </div>
+            <div className="flex justify-end gap-2 pt-1">
+              <button type="button" disabled={reanalyzing} onClick={() => setShowReanalyzeModal(false)} className="px-4 py-2 text-sm font-semibold text-[#57534E] bg-[#F5F5F4] hover:bg-[#E7E5E4] rounded-xl disabled:opacity-50">
+                Batal
+              </button>
+              <button type="button" disabled={reanalyzing} onClick={handleReanalyze} className="px-4 py-2 text-sm font-bold text-white bg-[#C2410C] hover:bg-[#9A3412] rounded-xl disabled:opacity-50 flex items-center gap-2">
+                {reanalyzing && <Loader2 className="w-4 h-4 animate-spin" />}
+                {reanalyzing ? 'Memulai...' : 'Mulai Analisis'}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1404,14 +1724,43 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
               {/* Column Left: Clip Candidates List (4 cols) */}
               <div className="lg:col-span-4 space-y-4">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <h3 className="font-semibold text-base text-[#1C1917] flex items-center space-x-2">
                     <Sparkles className="w-4 h-4 text-[#C2410C]" />
                     <span>Kandidat Klip AI ({clips.length})</span>
                   </h3>
-                  <span className="text-xs text-[#78716C] font-mono">
-                    Urut berdasarkan Hook
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowReanalyzeModal(true)}
+                      className="px-3 py-1.5 bg-white hover:bg-[#F5F5F4] text-[#57534E] border border-[#D6D3D1] text-xs font-bold rounded-lg transition-all flex items-center space-x-1.5 shadow-xs"
+                      title="Minta ulang analisis AI dengan durasi/prompt berbeda"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>Analisis Ulang</span>
+                    </button>
+                  {clips.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleBatchRenderAllClips}
+                      disabled={batchRenderingClips}
+                      className="px-3 py-1.5 bg-[#FFF7ED] hover:bg-[#FFEDD5] text-[#C2410C] border border-[#FDBA74] text-xs font-bold rounded-lg transition-all flex items-center space-x-1.5 disabled:opacity-50 shadow-xs"
+                      title="Render semua kandidat klip ke antrean background"
+                    >
+                      {batchRenderingClips ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Mengantrekan...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Layers className="w-3.5 h-3.5" />
+                          <span>Render Semua ({clips.length})</span>
+                        </>
+                      )}
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {clips.length === 0 ? (
@@ -1443,9 +1792,9 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                           }`}
                         >
                           <div className="flex items-center justify-between mb-1.5">
-                            <span className="px-2 py-0.5 bg-[#C2410C]/10 text-[#C2410C] text-xs font-semibold rounded-md font-mono">
-                              Hook Score: {clip.hook_score}/100
-                            </span>
+                              <span className="px-2 py-0.5 bg-[#C2410C]/10 text-[#C2410C] text-xs font-semibold rounded-md font-mono" title={`LLM ${clip.hook_score} • rate ${(clip.speech_rate ?? 0).toFixed(2)} k/dtk • keyword ${((clip.keyword_density ?? 0) * 100).toFixed(1)}%`}>
+                                Skor: {(clip.composite_score ?? 0) > 0 ? clip.composite_score : clip.hook_score}/100
+                              </span>
                             <span className="text-xs text-[#78716C] font-mono">
                               {clip.duration_seconds.toFixed(1)}s
                             </span>
@@ -1465,6 +1814,25 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                             <span>Mulai: {clip.start_time_seconds}s</span>
                             <span>Selesai: {clip.end_time_seconds}s</span>
                           </div>
+
+                          {(() => {
+                            const cov = clip.face_coverage ?? 0;
+                            const badge =
+                              cov <= 0
+                                ? { cls: 'bg-[#F5F5F4] text-[#A8A29E] border-[#E7E5E4]', icon: '⚪', label: 'Wajah: belum dianalisis' }
+                                : cov >= 0.7
+                                ? { cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', icon: '🟢', label: `Wajah ${Math.round(cov * 100)}% • crop optimal` }
+                                : cov >= 0.3
+                                ? { cls: 'bg-amber-50 text-amber-700 border-amber-200', icon: '🟡', label: `Wajah ${Math.round(cov * 100)}% • parsial` }
+                                : { cls: 'bg-red-50 text-red-600 border-red-200', icon: '🔴', label: `Wajah ${Math.round(cov * 100)}% • center crop` };
+                            return (
+                              <div className="mt-2">
+                                <span className={`px-2 py-0.5 text-[10px] font-semibold rounded-md border ${badge.cls}`}>
+                                  {badge.icon} {badge.label}
+                                </span>
+                              </div>
+                            );
+                          })()}
                         </div>
                       );
                     })}
@@ -1521,7 +1889,7 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                     {/* 9:16 Vertical Crop Simulator */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
                       {/* Visual 9:16 Phone Mockup Box with Real Video Stream */}
-                      <div className="flex flex-col items-center md:sticky md:top-6">
+                      <div className="flex flex-col items-center md:sticky md:top-36">
                         {/* Bezel ponsel; ukuran layar ditentukan rasio 9:16 sesungguhnya */}
                         <div className="w-[230px] p-[5px] bg-[#292524] rounded-[36px] shadow-2xl">
                           <SubtitleFrame
@@ -1541,37 +1909,44 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                             enableDynamicScaling={enableDynamicScaling}
                             enableEmojiInjection={enableEmojiInjection}
                             glowEffect={glowEffect}
+                            framingLayout={framingLayout}
+                            screenMode={screenMode}
+                            personShape={personShape}
+                            personScale={personScale}
+                            personOffsetX={personOffsetX}
+                            personOffsetY={personOffsetY}
+                            screenOffsetX={screenOffsetX}
+                            screenOffsetY={screenOffsetY}
+                            screenScale={screenScale}
+                            screenAspect={screenAspect}
+                            enableVocalDynamics={enableVocalDynamics}
+                            videoFilter={videoFilter}
+                            overlayIntro={ovIntro ? clipTitle : null}
+                            overlayOutro={ovOutro ? ovOutroText : null}
+                            overlayLowerThird={ovLower ? ovLowerText || 'Nama' : null}
+                            videoSrc={activeVideoId ? videosApi.getStreamUrl(activeVideoId) : undefined}
+                            cropOffsetX={cropOffsetX}
+                            videoRef={videoRef}
+                            onTimeUpdate={handleTimeUpdate}
+                            onVideoClick={togglePlay}
+                            isMuted={isMuted}
                             className="rounded-[31px] text-white select-none"
                           >
                             {/* Top Phone Sensor Notch */}
-                            <div className="absolute top-2 left-1/2 -translate-x-1/2 w-20 h-4 bg-[#292524] rounded-full z-20 flex items-center justify-center">
+                            <div className="absolute top-2 left-1/2 -translate-x-1/2 w-20 h-4 bg-[#292524] rounded-full flex items-center justify-center">
                               <div className="w-2.5 h-2.5 rounded-full bg-black/60 mr-1" />
                               <div className="w-1.5 h-1.5 rounded-full bg-blue-900/50" />
                             </div>
 
                             {/* Header indicators inside screen */}
-                            <div className="absolute top-0 left-0 right-0 flex justify-between items-center text-[10px] text-white/70 font-mono z-10 pt-4 px-3">
+                            <div className="absolute top-0 left-0 right-0 flex justify-between items-center text-[10px] text-white/70 font-mono pt-4 px-3">
                               <span>9:16</span>
                               <span className="bg-black/50 px-1.5 py-0.5 rounded backdrop-blur-xs">1080×1920</span>
                             </div>
 
-                            {/* REAL Source Video Element Playing with CSS Crop */}
-                            {activeVideoId && (
-                              <video
-                                ref={videoRef}
-                                src={videosApi.getStreamUrl(activeVideoId)}
-                                onTimeUpdate={handleTimeUpdate}
-                                onClick={togglePlay}
-                                loop
-                                playsInline
-                                muted={isMuted}
-                                className="absolute inset-0 w-full h-full object-cover cursor-pointer z-0"
-                              />
-                            )}
-
                             {/* Optional Rule-of-Thirds Grid Overlay */}
                             {showGridGuide && (
-                              <div className="absolute inset-0 pointer-events-none grid grid-cols-3 grid-rows-3 z-10 opacity-30">
+                              <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 opacity-30">
                                 <div className="border-r border-b border-white/50" />
                                 <div className="border-r border-b border-white/50" />
                                 <div className="border-b border-white/50" />
@@ -1588,7 +1963,7 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                             {!isPlaying && (
                               <div
                                 onClick={togglePlay}
-                                className="absolute inset-0 bg-black/30 backdrop-blur-xs flex items-center justify-center cursor-pointer z-10 group"
+                                className="absolute inset-0 bg-black/30 backdrop-blur-xs flex items-center justify-center cursor-pointer pointer-events-auto group"
                               >
                                 <div className="w-12 h-12 rounded-full bg-white/80 group-hover:bg-[#C2410C] text-[#1C1917] group-hover:text-white flex items-center justify-center shadow-lg transition-transform group-hover:scale-110">
                                   <Play className="w-6 h-6 ml-0.5 fill-current" />
@@ -1597,7 +1972,7 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                             )}
 
                             {/* Bottom Phone Bar */}
-                            <div className="absolute bottom-1 left-1/2 -translate-x-1/2 w-24 h-1 bg-white/40 rounded-full z-20" />
+                            <div className="absolute bottom-1 left-1/2 -translate-x-1/2 w-24 h-1 bg-white/40 rounded-full" />
                           </SubtitleFrame>
                         </div>
 
@@ -1645,6 +2020,9 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                             <Layers className="w-3.5 h-3.5" />
                           </button>
                         </div>
+                        <p className="text-[11px] font-mono text-[#78716C] mt-2">
+                          Segmen {startTime.toFixed(1)}s – {endTime.toFixed(1)}s ({Math.max(0, endTime - startTime).toFixed(1)}s)
+                        </p>
                       </div>
 
                       {/* Framing, Subtitle & Audio Controls */}
@@ -1708,9 +2086,27 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                                 Klik salah satu template di bawah untuk menerapkan framing kamera, gaya teks, posisi Y, dan musiknya secara otomatis.
                               </p>
 
+                              {/* Filter kategori */}
+                              <div className="flex flex-wrap gap-1.5">
+                                {['semua', 'streamer', 'podcast', 'educational', 'motivational', 'gaming', 'text'].map((c) => (
+                                  <button
+                                    key={c}
+                                    type="button"
+                                    onClick={() => setPresetCat(c)}
+                                    className={`px-2.5 py-1 text-[11px] font-bold rounded-full transition-all ${
+                                      presetCat === c
+                                        ? 'bg-[#C2410C] text-white'
+                                        : 'bg-[#F5F5F4] text-[#57534E] hover:bg-[#E7E5E4]'
+                                    }`}
+                                  >
+                                    {c === 'semua' ? 'Semua' : c}
+                                  </button>
+                                ))}
+                              </div>
+
                               {/* Daftar Template - Natural parent flow, no inner scroll */}
                               <div className="grid grid-cols-1 gap-2.5">
-                                {presets.map((p) => {
+                                {presets.filter((p) => presetCat === 'semua' || (p.category || 'text') === presetCat).map((p) => {
                                   const isSelected = presetId === p.id;
                                   return (
                                     <div
@@ -1732,6 +2128,11 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                                           ) : (
                                             <span className="px-1.5 py-0.5 bg-amber-100 text-amber-800 text-[10px] font-semibold rounded">
                                               Kustom
+                                            </span>
+                                          )}
+                                          {p.category && p.category !== 'text' && (
+                                            <span className="px-1.5 py-0.5 bg-violet-100 text-violet-700 text-[10px] font-semibold rounded">
+                                              {p.category}
                                             </span>
                                           )}
                                         </div>
@@ -1842,154 +2243,538 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                           </button>
                         </div>
 
-                        <div className={controlTab === 'visual' ? 'space-y-4' : 'hidden'}>
-                        {/* Crop Mode */}
-                        <div>
-                          <label className="block text-xs font-semibold text-[#78716C] uppercase tracking-wider mb-1.5 flex items-center space-x-1.5">
-                            <Crop className="w-3.5 h-3.5" />
-                            <span>Mode Pemotongan (9:16)</span>
-                          </label>
-                          <div className="grid grid-cols-3 gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setCropMode('center');
-                                setCropOffsetX(0);
-                              }}
-                              className={`py-2 text-xs font-semibold rounded-xl border transition-all ${
-                                cropMode === 'center'
-                                  ? 'bg-[#C2410C] text-white border-[#C2410C] shadow-xs'
-                                  : 'bg-white text-[#57534E] border-[#D6D3D1] hover:bg-[#F5F5F4]'
-                              }`}
-                            >
-                              Tengah
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setCropMode('manual')}
-                              className={`py-2 text-xs font-semibold rounded-xl border transition-all ${
-                                cropMode === 'manual'
-                                  ? 'bg-[#C2410C] text-white border-[#C2410C] shadow-xs'
-                                  : 'bg-white text-[#57534E] border-[#D6D3D1] hover:bg-[#F5F5F4]'
-                              }`}
-                            >
-                              Manual X
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setCropMode('smart')}
-                              className={`py-2 text-xs font-semibold rounded-xl border transition-all ${
-                                cropMode === 'smart'
-                                  ? 'bg-[#C2410C] text-white border-[#C2410C] shadow-xs'
-                                  : 'bg-white text-[#57534E] border-[#D6D3D1] hover:bg-[#F5F5F4]'
-                              }`}
-                            >
-                              Ikuti Wajah
-                            </button>
-                          </div>
-                        </div>
+                        <div className={controlTab === 'visual' ? 'space-y-5' : 'hidden'}>
+                          {/* 1. LEVEL 1: JENIS KOMPOSISI UTAMA */}
+                          <div>
+                            <label className="block text-xs font-bold text-[#78716C] uppercase tracking-wider mb-2 flex items-center space-x-1.5">
+                              <Layers className="w-3.5 h-3.5 text-[#C2410C]" />
+                              <span>Tata Letak Komposisi (Layout)</span>
+                            </label>
+                            <div className="grid grid-cols-3 gap-2 p-1 bg-[#F5F5F4] rounded-xl">
+                              {[
+                                { id: 'single', name: 'Without Overlay', icon: '📱' },
+                                { id: 'pip', name: 'With Overlay', icon: '🎴' },
+                                { id: 'streamer', name: 'Streamer', icon: '🎮' },
+                              ].map((cat) => {
+                                const isSelected =
+                                  cat.id === 'pip'
+                                    ? framingLayout === 'pip_full' || framingLayout === 'pip_center' || framingLayout === 'overlay_pip'
+                                    : cat.id === 'streamer'
+                                    ? framingLayout === 'streamer_face_top' || framingLayout === 'streamer_face_bottom'
+                                    : framingLayout === 'single' || framingLayout === 'fit_16_9_center';
 
-                        {cropMode === 'smart' && (
-                          <div className="space-y-3">
-                            <div>
-                              <div className="flex justify-between text-xs text-[#57534E] mb-1">
-                                <span>Batas Gerak Kepala (Deadzone)</span>
-                                <span className="font-mono font-semibold text-[#C2410C]">
-                                  {Math.round(smartDeadzone * 100)}%
-                                </span>
-                              </div>
-                              <input
-                                type="range"
-                                min="10"
-                                max="90"
-                                step="5"
-                                value={Math.round(smartDeadzone * 100)}
-                                onChange={(e) => setSmartDeadzone(parseInt(e.target.value) / 100)}
-                                className="w-full accent-[#C2410C] cursor-pointer"
-                              />
-                              <p className="text-[11px] text-[#78716C] mt-1">
-                                Kepala bebas bergerak di pita tengah selebar {Math.round(smartDeadzone * 100)}% dari
-                                jendela. Layar hanya bergeser bila kepala melewati batas itu, dan hanya seperlunya.
-                              </p>
+                                return (
+                                  <button
+                                    key={cat.id}
+                                    type="button"
+                                    onClick={() => {
+                                      if (cat.id === 'pip') {
+                                        setFramingLayout(screenMode === 'center' ? 'pip_center' : 'pip_full');
+                                      } else if (cat.id === 'streamer') {
+                                        setFramingLayout('streamer_face_top');
+                                      } else {
+                                        setFramingLayout(screenMode === 'center' ? 'fit_16_9_center' : 'single');
+                                      }
+                                    }}
+                                    className={`py-2 px-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center space-x-1.5 ${
+                                      isSelected
+                                        ? 'bg-white text-[#C2410C] shadow-xs'
+                                        : 'text-[#78716C] hover:text-[#1C1917]'
+                                    }`}
+                                  >
+                                    <span>{cat.icon}</span>
+                                    <span>{cat.name}</span>
+                                  </button>
+                                );
+                              })}
                             </div>
+                          </div>
 
-                            <div>
-                              <div className="text-xs text-[#57534E] mb-1">Transisi Pergeseran</div>
+                          {/* Deteksi Posisi Wajah (5.1 Face Anchor) */}
+                          <div className="p-3 bg-[#FFF7ED] border border-[#FDBA74] rounded-xl space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-bold text-[#1C1917]">🎯 Posisi Wajah Streamer</span>
+                              <button
+                                type="button"
+                                onClick={handleAnalyzeFaceAnchor}
+                                disabled={!selectedClip || analyzingFace}
+                                className="px-3 py-1.5 bg-[#C2410C] hover:bg-[#9A3412] text-white text-xs font-bold rounded-lg transition-all flex items-center space-x-1.5 disabled:opacity-50"
+                                title="Analisis zona wajah untuk rekomendasi layout"
+                              >
+                                {analyzingFace ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                ) : null}
+                                <span>{analyzingFace ? 'Menganalisis...' : 'Deteksi Posisi Wajah'}</span>
+                              </button>
+                            </div>
+                            {faceAnchor && (
+                              <div className="text-xs text-[#57534E] space-y-1.5">
+                                <p>
+                                  Zona <strong className="text-[#C2410C] uppercase">{faceAnchor.dominant_zone}</strong>
+                                  {' '}• coverage {Math.round(faceAnchor.face_coverage * 100)}%
+                                  {' '}• saran layout <strong className="font-mono">{faceAnchor.recommended_layout}</strong>
+                                </p>
+                                {faceAnchor.warning && (
+                                  <p className="text-amber-700">⚠️ {faceAnchor.warning}</p>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={applyFaceRecommendation}
+                                  className="px-3 py-1.5 bg-white hover:bg-[#F5F5F4] text-[#C2410C] border border-[#FDBA74] text-xs font-bold rounded-lg transition-all"
+                                >
+                                  Terapkan Saran Layout
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* ========================================================
+                              KATEGORI 1: WITHOUT OVERLAY
+                             ======================================================== */}
+                          {(framingLayout === 'single' || framingLayout === 'fit_16_9_center') && (
+                            <div className="space-y-4 pt-1 animate-in fade-in duration-200">
+                              {/* Format Tampilan */}
+                              <div>
+                                <label className="block text-xs font-semibold text-[#78716C] uppercase tracking-wider mb-2">
+                                  Format Tampilan
+                                </label>
+                                <div className="grid grid-cols-2 gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setFramingLayout('single');
+                                      setScreenMode('full');
+                                    }}
+                                    className={`py-2.5 px-3 rounded-xl border text-xs font-bold transition-all flex items-center justify-center space-x-2 ${
+                                      framingLayout === 'single'
+                                        ? 'bg-[#FFF7ED] border-[#C2410C] text-[#C2410C] ring-1 ring-[#C2410C]'
+                                        : 'bg-white border-[#D6D3D1] text-[#57534E] hover:bg-[#F5F5F4]'
+                                    }`}
+                                  >
+                                    <span>📱 9:16 Penuh (Vertikal)</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setFramingLayout('fit_16_9_center');
+                                      setScreenMode('center');
+                                    }}
+                                    className={`py-2.5 px-3 rounded-xl border text-xs font-bold transition-all flex items-center justify-center space-x-2 ${
+                                      framingLayout === 'fit_16_9_center'
+                                        ? 'bg-[#FFF7ED] border-[#C2410C] text-[#C2410C] ring-1 ring-[#C2410C]'
+                                        : 'bg-white border-[#D6D3D1] text-[#57534E] hover:bg-[#F5F5F4]'
+                                    }`}
+                                  >
+                                    <span>🖼️ 16:9 di Tengah (Ambient Blur)</span>
+                                  </button>
+                                </div>
+                              </div>
+
+                              {/* Jika 9:16 Penuh: Tampilkan Mode Pemotongan Kamera */}
+                              {framingLayout === 'single' && (
+                                <div className="space-y-4 pt-2 border-t border-[#E7E5E4]">
+                                  <div>
+                                    <label className="block text-xs font-semibold text-[#78716C] uppercase tracking-wider mb-2">
+                                      Kamera AI & Pemotongan
+                                    </label>
+                                    <div className="grid grid-cols-3 gap-2">
+                                      {[
+                                        { id: 'smart', label: '👁️ Ikuti Wajah' },
+                                        { id: 'center', label: '📐 Posisi Tengah' },
+                                        { id: 'manual', label: '↔️ Geser Manual' },
+                                      ].map((mode) => (
+                                        <button
+                                          key={mode.id}
+                                          type="button"
+                                          onClick={() => {
+                                            setCropMode(mode.id as any);
+                                            if (mode.id === 'center') setCropOffsetX(0);
+                                          }}
+                                          className={`py-2 rounded-xl border text-xs font-bold transition-all ${
+                                            cropMode === mode.id
+                                              ? 'bg-[#C2410C] text-white border-[#C2410C]'
+                                              : 'bg-white text-[#57534E] border-[#D6D3D1] hover:bg-[#F5F5F4]'
+                                          }`}
+                                        >
+                                          {mode.label}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+
+                                  {/* Smart Deadzone & Transitions */}
+                                  {cropMode === 'smart' && (
+                                    <div className="space-y-3 pt-1">
+                                      <div className="space-y-1.5">
+                                        <div className="flex justify-between items-center text-xs">
+                                          <span className="font-semibold text-[#57534E]">Batas Gerak Kepala (Deadzone)</span>
+                                          <span className="font-mono font-bold text-[#C2410C] bg-orange-50 px-2 py-0.5 rounded border border-orange-200 text-[11px]">
+                                            {Math.round(smartDeadzone * 100)}%
+                                          </span>
+                                        </div>
+                                        <input
+                                          type="range"
+                                          min="10"
+                                          max="90"
+                                          step="5"
+                                          value={Math.round(smartDeadzone * 100)}
+                                          onChange={(e) => setSmartDeadzone(parseInt(e.target.value) / 100)}
+                                          className="w-full accent-[#C2410C] cursor-pointer"
+                                        />
+                                        <p className="text-[11px] text-[#78716C]">
+                                          Kepala bebas bergerak di pita tengah selebar {Math.round(smartDeadzone * 100)}% tanpa menggeser kamera.
+                                        </p>
+                                      </div>
+
+                                      <div className="space-y-1.5">
+                                        <span className="block text-xs font-semibold text-[#57534E]">Transisi Pergeseran</span>
+                                        <div className="grid grid-cols-2 gap-2">
+                                          <button
+                                            type="button"
+                                            onClick={() => setSmartSnap(false)}
+                                            className={`py-1.5 text-xs font-bold rounded-xl border transition-all ${
+                                              !smartSnap
+                                                ? 'bg-[#C2410C] text-white border-[#C2410C]'
+                                                : 'bg-white text-[#57534E] border-[#D6D3D1] hover:bg-[#F5F5F4]'
+                                            }`}
+                                          >
+                                            Halus (Smooth Pan)
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => setSmartSnap(true)}
+                                            className={`py-1.5 text-xs font-bold rounded-xl border transition-all ${
+                                              smartSnap
+                                                ? 'bg-[#C2410C] text-white border-[#C2410C]'
+                                                : 'bg-white text-[#57534E] border-[#D6D3D1] hover:bg-[#F5F5F4]'
+                                            }`}
+                                          >
+                                            Snap (Seketika)
+                                          </button>
+                                        </div>
+                                      </div>
+
+                                      {/* Detection Feedback */}
+                                      {loadingPreview ? (
+                                        <p className="text-[11px] text-[#78716C] flex items-center space-x-1.5 pt-1">
+                                          <Loader2 className="w-3 h-3 animate-spin" />
+                                          <span>Mendeteksi posisi wajah pada klip ini...</span>
+                                        </p>
+                                      ) : reframePreview && reframePreview.detected ? (
+                                        <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-[11px] text-emerald-800 flex items-center space-x-1.5">
+                                          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                                          <span>
+                                            Wajah terdeteksi di {Math.round(reframePreview.coverage * 100)}% frame ·{' '}
+                                            {cameraMoves === 0
+                                              ? 'kamera tidak perlu bergeser'
+                                              : `kamera bergeser ${cameraMoves}x`}
+                                          </span>
+                                        </div>
+                                      ) : reframePreview ? (
+                                        <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-800 flex items-center space-x-1.5">
+                                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                                          <span>Wajah tidak terdeteksi — crop memakai posisi tengah.</span>
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  )}
+
+                                  {/* Manual X Offset Slider */}
+                                  {cropMode === 'manual' && (
+                                    <div className="space-y-1.5 pt-1">
+                                      <div className="flex justify-between items-center text-xs">
+                                        <span className="font-semibold text-[#57534E]">Geser Horizontal (X)</span>
+                                        <span className="font-mono font-bold text-[#C2410C] bg-orange-50 px-2 py-0.5 rounded border border-orange-200 text-[11px]">
+                                          {cropOffsetX} px
+                                        </span>
+                                      </div>
+                                      <input
+                                        type="range"
+                                        min="0"
+                                        max="600"
+                                        step="10"
+                                        value={cropOffsetX}
+                                        onChange={(e) => setCropOffsetX(parseInt(e.target.value))}
+                                        className="w-full accent-[#C2410C] cursor-pointer"
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* Jika 16:9 di Tengah: Skala Layar Slider */}
+                              {framingLayout === 'fit_16_9_center' && (
+                                <div className="space-y-4 pt-2 border-t border-[#E7E5E4]">
+                                  <div className="space-y-1.5">
+                                    <div className="flex justify-between items-center text-xs">
+                                      <span className="font-semibold text-[#57534E]">Zoom Skala Layar</span>
+                                      <span className="font-mono font-bold text-[#C2410C] bg-orange-50 px-2 py-0.5 rounded border border-orange-200 text-[11px]">
+                                        {Math.round(screenScale * 100)}%
+                                      </span>
+                                    </div>
+                                    <input
+                                      type="range"
+                                      min="50"
+                                      max="150"
+                                      step="5"
+                                      value={Math.round(screenScale * 100)}
+                                      onChange={(e) => setScreenScale(parseInt(e.target.value) / 100)}
+                                      className="w-full accent-[#C2410C] cursor-pointer"
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* ========================================================
+                              KATEGORI 3: STREAMER (Y-aware)
+                             ======================================================== */}
+                          {(framingLayout === 'streamer_face_top' || framingLayout === 'streamer_face_bottom') && (
+                            <div className="space-y-4 pt-1 animate-in fade-in duration-200">
                               <div className="grid grid-cols-2 gap-2">
                                 <button
                                   type="button"
-                                  onClick={() => setSmartSnap(false)}
-                                  className={`py-2 text-xs font-semibold rounded-xl border transition-all ${
-                                    !smartSnap
-                                      ? 'bg-[#C2410C] text-white border-[#C2410C] shadow-xs'
-                                      : 'bg-white text-[#57534E] border-[#D6D3D1] hover:bg-[#F5F5F4]'
+                                  onClick={() => setFramingLayout('streamer_face_top')}
+                                  className={`py-2.5 px-3 rounded-xl border text-xs font-bold transition-all ${
+                                    framingLayout === 'streamer_face_top'
+                                      ? 'bg-[#FFF7ED] border-[#C2410C] text-[#C2410C] ring-1 ring-[#C2410C]'
+                                      : 'bg-white border-[#D6D3D1] text-[#57534E] hover:bg-[#F5F5F4]'
                                   }`}
                                 >
-                                  Halus
+                                  <span>🎮 Wajah Atas (40/60)</span>
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => setSmartSnap(true)}
-                                  className={`py-2 text-xs font-semibold rounded-xl border transition-all ${
-                                    smartSnap
-                                      ? 'bg-[#C2410C] text-white border-[#C2410C] shadow-xs'
-                                      : 'bg-white text-[#57534E] border-[#D6D3D1] hover:bg-[#F5F5F4]'
+                                  onClick={() => setFramingLayout('streamer_face_bottom')}
+                                  className={`py-2.5 px-3 rounded-xl border text-xs font-bold transition-all ${
+                                    framingLayout === 'streamer_face_bottom'
+                                      ? 'bg-[#FFF7ED] border-[#C2410C] text-[#C2410C] ring-1 ring-[#C2410C]'
+                                      : 'bg-white border-[#D6D3D1] text-[#57534E] hover:bg-[#F5F5F4]'
                                   }`}
                                 >
-                                  Snap
+                                  <span>🎮 Wajah Bawah (60/40)</span>
                                 </button>
                               </div>
-                              <p className="text-[11px] text-[#78716C] mt-1">
-                                {smartSnap
-                                  ? 'Kamera berpindah seketika tanpa transisi, lalu menempatkan wajah di tengah.'
-                                  : 'Kamera bergeser mulus selama setengah detik ke tepi pita terdekat.'}
+                              <p className="text-[11px] text-[#78716C]">
+                                Posisi vertikal wajah terdeteksi otomatis saat render (tombol 🎯 di atas). Gagal deteksi → fallback split biasa.
                               </p>
                             </div>
+                          )}
 
-                            {loadingPreview ? (
-                              <p className="text-[11px] text-[#78716C] flex items-center space-x-1.5">
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                                <span>Mendeteksi posisi wajah pada klip ini...</span>
-                              </p>
-                            ) : reframePreview && reframePreview.detected ? (
-                              <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-[11px] text-emerald-800 flex items-center space-x-1.5">
-                                <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                                <span>
-                                  Wajah terdeteksi di {Math.round(reframePreview.coverage * 100)}% frame ·{' '}
-                                  {cameraMoves === 0
-                                    ? 'kamera tidak perlu bergeser'
-                                    : `kamera bergeser ${cameraMoves}x`}
-                                </span>
-                              </div>
-                            ) : reframePreview ? (
-                              <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-800 flex items-center space-x-1.5">
-                                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                                <span>Wajah tidak terdeteksi — crop memakai posisi tengah.</span>
-                              </div>
-                            ) : null}
-                          </div>
-                        )}
+                          {/* ========================================================
+                              KATEGORI 2: WITH OVERLAY
+                             ======================================================== */}
+                          {(framingLayout === 'pip_full' || framingLayout === 'pip_center' || framingLayout === 'overlay_pip') && (
+                            <div className="space-y-4 pt-1 animate-in fade-in duration-200">
+                              <div className="grid grid-cols-2 gap-3">
+                                {/* Mode Layar Dasar */}
+                                <div>
+                                  <label className="block text-xs font-semibold text-[#78716C] uppercase tracking-wider mb-2">
+                                    Layar Dasar
+                                  </label>
+                                  <div className="grid grid-cols-2 gap-1.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setScreenMode('full');
+                                        setFramingLayout('pip_full');
+                                      }}
+                                      className={`py-2 text-xs font-bold rounded-xl border transition-all ${
+                                        screenMode === 'full'
+                                          ? 'bg-[#C2410C] text-white border-[#C2410C]'
+                                          : 'bg-white text-[#57534E] border-[#D6D3D1]'
+                                      }`}
+                                    >
+                                      9:16 Full
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setScreenMode('center');
+                                        setFramingLayout('pip_center');
+                                      }}
+                                      className={`py-2 text-xs font-bold rounded-xl border transition-all ${
+                                        screenMode === 'center'
+                                          ? 'bg-[#C2410C] text-white border-[#C2410C]'
+                                          : 'bg-white text-[#57534E] border-[#D6D3D1]'
+                                      }`}
+                                    >
+                                      16:9 Center
+                                    </button>
+                                  </div>
+                                </div>
 
-                        {cropMode === 'manual' && (
-                          <div>
-                            <div className="flex justify-between text-xs text-[#57534E] mb-1">
-                              <span>Horizontal Offset (Geser Framing)</span>
-                              <span className="font-mono font-semibold text-[#C2410C]">{cropOffsetX} px</span>
+                                {/* Bentuk Facecam */}
+                                <div>
+                                  <label className="block text-xs font-semibold text-[#78716C] uppercase tracking-wider mb-2">
+                                    Bentuk Facecam
+                                  </label>
+                                  <div className="grid grid-cols-3 gap-1.5">
+                                    {[
+                                      { id: 'circle', label: '⭕ Lingkaran' },
+                                      { id: 'rounded', label: '🔲 Kotak' },
+                                      { id: 'rectangle', label: '⏹️ Persegi' },
+                                    ].map((s) => (
+                                      <button
+                                        key={s.id}
+                                        type="button"
+                                        onClick={() => setPersonShape(s.id as any)}
+                                        className={`py-2 text-[11px] font-bold rounded-xl border transition-all ${
+                                          personShape === s.id
+                                            ? 'bg-[#C2410C] text-white border-[#C2410C]'
+                                            : 'bg-white text-[#57534E] border-[#D6D3D1]'
+                                        }`}
+                                      >
+                                        {s.label}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Facecam Source Area & Position */}
+                              <div className="space-y-3 pt-3 border-t border-[#E7E5E4]">
+                                <div>
+                                  <label className="block text-xs font-semibold text-[#78716C] uppercase tracking-wider mb-2">
+                                    Sumber Potongan Wajah / Webcam
+                                  </label>
+                                  <div className="grid grid-cols-4 gap-1.5">
+                                    {[
+                                      { id: 'ai', label: '👁️ AI Wajah', mode: 'smart', x: 0 },
+                                      { id: 'br', label: '↘️ Kanan Bwh', mode: 'manual', x: 1380 },
+                                      { id: 'bl', label: '↙️ Kiri Bwh', mode: 'manual', x: 0 },
+                                      { id: 'mid', label: '📐 Tengah', mode: 'manual', x: 690 },
+                                    ].map((pos) => {
+                                      const isAct =
+                                        pos.id === 'ai'
+                                          ? cropMode === 'smart'
+                                          : cropMode === 'manual' &&
+                                            (pos.id === 'br' ? cropOffsetX >= 1100 : pos.id === 'bl' ? cropOffsetX <= 200 : cropOffsetX > 200 && cropOffsetX < 1100);
+
+                                      return (
+                                        <button
+                                          key={pos.id}
+                                          type="button"
+                                          onClick={() => {
+                                            setCropMode(pos.mode as any);
+                                            setCropOffsetX(pos.x);
+                                          }}
+                                          className={`py-2 text-[11px] font-bold rounded-xl border transition-all ${
+                                            isAct
+                                              ? 'bg-[#C2410C] text-white border-[#C2410C]'
+                                              : 'bg-white text-[#57534E] border-[#D6D3D1] hover:bg-[#F5F5F4]'
+                                          }`}
+                                        >
+                                          {pos.label}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+
+                                {cropMode === 'manual' && (
+                                  <div className="space-y-1.5">
+                                    <div className="flex justify-between items-center text-xs">
+                                      <span className="font-semibold text-[#57534E]">Posisi Sumber Kamera (X)</span>
+                                      <span className="font-mono font-bold text-[#C2410C] bg-orange-50 px-2 py-0.5 rounded border border-orange-200 text-[11px]">
+                                        {cropOffsetX} px
+                                      </span>
+                                    </div>
+                                    <input
+                                      type="range"
+                                      min="0"
+                                      max="1380"
+                                      step="20"
+                                      value={cropOffsetX}
+                                      onChange={(e) => setCropOffsetX(parseInt(e.target.value))}
+                                      className="w-full accent-[#C2410C] cursor-pointer"
+                                    />
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* Minimalist Facecam Controls */}
+                              <div className="space-y-3.5 pt-3 border-t border-[#E7E5E4]">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-bold text-[#1C1917] uppercase tracking-wider">
+                                    Ukuran & Posisi Tampilan Facecam
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setPersonOffsetX(0);
+                                      setPersonOffsetY(400);
+                                      setPersonScale(0.35);
+                                      setPersonShape('circle');
+                                    }}
+                                    className="text-xs text-[#C2410C] hover:underline flex items-center space-x-1 font-semibold"
+                                  >
+                                    <RotateCcw className="w-3.5 h-3.5" />
+                                    <span>Reset Posisi</span>
+                                  </button>
+                                </div>
+
+                                {/* Skala Facecam */}
+                                <div className="space-y-1.5">
+                                  <div className="flex justify-between items-center text-xs">
+                                    <span className="font-semibold text-[#57534E]">Ukuran Facecam (Skala PIP)</span>
+                                    <span className="font-mono font-bold text-[#C2410C] bg-orange-50 px-2 py-0.5 rounded border border-orange-200 text-[11px]">
+                                      {Math.round(personScale * 100)}%
+                                    </span>
+                                  </div>
+                                  <input
+                                    type="range"
+                                    min="15"
+                                    max="75"
+                                    step="5"
+                                    value={Math.round(personScale * 100)}
+                                    onChange={(e) => setPersonScale(parseInt(e.target.value) / 100)}
+                                    className="w-full accent-[#C2410C] cursor-pointer"
+                                  />
+                                </div>
+
+                                {/* Posisi X & Y Facecam */}
+                                <div className="grid grid-cols-2 gap-3">
+                                  <div className="space-y-1.5">
+                                    <div className="flex justify-between items-center text-xs">
+                                      <span className="font-semibold text-[#57534E]">Geser X (Horizontal)</span>
+                                      <span className="font-mono font-bold text-[#C2410C] bg-orange-50 px-2 py-0.5 rounded border border-orange-200 text-[11px]">
+                                        {personOffsetX} px
+                                      </span>
+                                    </div>
+                                    <input
+                                      type="range"
+                                      min="-450"
+                                      max="450"
+                                      step="10"
+                                      value={personOffsetX}
+                                      onChange={(e) => setPersonOffsetX(parseInt(e.target.value))}
+                                      className="w-full accent-[#C2410C] cursor-pointer"
+                                    />
+                                  </div>
+
+                                  <div className="space-y-1.5">
+                                    <div className="flex justify-between items-center text-xs">
+                                      <span className="font-semibold text-[#57534E]">Geser Y (Vertikal)</span>
+                                      <span className="font-mono font-bold text-[#C2410C] bg-orange-50 px-2 py-0.5 rounded border border-orange-200 text-[11px]">
+                                        {personOffsetY} px
+                                      </span>
+                                    </div>
+                                    <input
+                                      type="range"
+                                      min="-800"
+                                      max="800"
+                                      step="10"
+                                      value={personOffsetY}
+                                      onChange={(e) => setPersonOffsetY(parseInt(e.target.value))}
+                                      className="w-full accent-[#C2410C] cursor-pointer"
+                                    />
+                                  </div>
+                                </div>
+                              </div>
                             </div>
-                            <input
-                              type="range"
-                              min="0"
-                              max="600"
-                              step="10"
-                              value={cropOffsetX}
-                              onChange={(e) => setCropOffsetX(parseInt(e.target.value))}
-                              className="w-full accent-[#C2410C] cursor-pointer"
-                            />
-                            <p className="text-[11px] text-[#78716C] mt-1">
-                              Geser slider untuk memindahkan frame 9:16 ke objek atau wajah pembicara.
-                            </p>
-                          </div>
-                        )}
+                          )}
 
                         {/* Save Preset Action Card */}
                         <div className="p-3 bg-[#F5F5F4] rounded-2xl border border-[#E7E5E4] space-y-2.5">
@@ -2034,7 +2819,7 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                               </div>
 
                               <div className="p-2 bg-[#F5F5F4] rounded-lg text-[10px] text-[#57534E] space-y-0.5">
-                                <div><strong>Akan menyimpan:</strong> Visual {cropMode}, {font} {fontSize}px, Pos Y: {marginV}px, BGM {Math.round(bgmVolume * 100)}% ({audioMode})</div>
+                                <div><strong>Akan menyimpan:</strong> Layout {framingLayout}, Visual {cropMode}, {font} {fontSize}px, Pos Y: {marginV}px, BGM {Math.round(bgmVolume * 100)}% ({audioMode})</div>
                               </div>
 
                               <div className="flex items-center space-x-2 pt-1">
@@ -2093,13 +2878,16 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                             <Sparkles className="w-3.5 h-3.5 text-[#C2410C]" />
                             <span>Gaya Animasi Subtitle (Motion Type)</span>
                           </label>
-                          <div className="grid grid-cols-5 gap-1.5 p-1 bg-[#F5F5F4] rounded-xl border border-[#E7E5E4]">
+                          <div className="grid grid-cols-4 gap-1.5 p-1 bg-[#F5F5F4] rounded-xl border border-[#E7E5E4]">
                             {[
                               { id: 'single_word_pop', label: 'Hormozi', icon: '🔥' },
                               { id: 'karaoke', label: 'Karaoke', icon: '🎤' },
                               { id: 'background_box', label: 'Sticker', icon: '🏷️' },
                               { id: 'typewriter', label: 'Typewriter', icon: '⌨️' },
                               { id: 'slide_up', label: 'Slide Up', icon: '⬆️' },
+                              { id: 'bounce_in', label: 'Bounce', icon: '🏀' },
+                              { id: 'zoom_flash', label: 'Zoom', icon: '💥' },
+                              { id: 'glitch_reveal', label: 'Glitch', icon: '👾' },
                             ].map((m) => (
                               <button
                                 key={m.id}
@@ -2115,6 +2903,65 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                                 <span className="truncate">{m.label}</span>
                               </button>
                             ))}
+                          </div>
+                        </div>
+
+                        {/* Video Filter Pack Quick Selector */}
+                        <div>
+                          <label className="block text-xs font-semibold text-[#78716C] uppercase tracking-wider mb-2">
+                            🎬 Filter Video
+                          </label>
+                          <div className="grid grid-cols-4 gap-1.5 p-1 bg-[#F5F5F4] rounded-xl border border-[#E7E5E4]">
+                            {[
+                              { id: 'none', label: 'Tanpa', icon: '🚫' },
+                              { id: 'cinematic', label: 'Sinema', icon: '🎬' },
+                              { id: 'vivid', label: 'Vivid', icon: '🌈' },
+                              { id: 'warm', label: 'Hangat', icon: '🌅' },
+                              { id: 'cool', label: 'Sejuk', icon: '❄️' },
+                              { id: 'drama', label: 'Drama', icon: '🎭' },
+                              { id: 'vintage', label: 'Vint', icon: '📼' },
+                            ].map((f) => (
+                              <button
+                                key={f.id}
+                                type="button"
+                                onClick={() => setVideoFilter(f.id)}
+                                className={`py-2 px-1 text-[11px] font-bold rounded-lg transition-all flex flex-col items-center justify-center space-y-0.5 ${
+                                  videoFilter === f.id
+                                    ? 'bg-[#C2410C] text-white shadow-xs'
+                                    : 'text-[#57534E] hover:bg-[#E7E5E4]'
+                                }`}
+                              >
+                                <span className="text-sm">{f.icon}</span>
+                                <span className="truncate">{f.label}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Overlay & Animasi */}
+                        <div>
+                          <label className="block text-xs font-semibold text-[#78716C] uppercase tracking-wider mb-2">
+                            ✨ Overlay & Animasi
+                          </label>
+                          <div className="space-y-2">
+                            <label className="flex items-center justify-between p-2.5 bg-[#F5F5F4] rounded-xl cursor-pointer">
+                              <span className="text-xs font-semibold text-[#1C1917]">Judul Intro</span>
+                              <input type="checkbox" checked={ovIntro} onChange={(e) => setOvIntro(e.target.checked)} className="w-4 h-4 accent-[#C2410C] cursor-pointer" />
+                            </label>
+                            <label className="flex items-center justify-between p-2.5 bg-[#F5F5F4] rounded-xl cursor-pointer">
+                              <span className="text-xs font-semibold text-[#1C1917]">CTA Outro</span>
+                              <input type="checkbox" checked={ovOutro} onChange={(e) => setOvOutro(e.target.checked)} className="w-4 h-4 accent-[#C2410C] cursor-pointer" />
+                            </label>
+                            {ovOutro && (
+                              <input type="text" value={ovOutroText} onChange={(e) => setOvOutroText(e.target.value)} placeholder="Follow untuk lebih banyak!" className="w-full px-3 py-2 bg-[#F5F5F4] border border-[#D6D3D1] rounded-xl text-xs text-[#1C1917] focus:border-[#C2410C] outline-none" />
+                            )}
+                            <label className="flex items-center justify-between p-2.5 bg-[#F5F5F4] rounded-xl cursor-pointer">
+                              <span className="text-xs font-semibold text-[#1C1917]">Lower Third</span>
+                              <input type="checkbox" checked={ovLower} onChange={(e) => setOvLower(e.target.checked)} className="w-4 h-4 accent-[#C2410C] cursor-pointer" />
+                            </label>
+                            {ovLower && (
+                              <input type="text" value={ovLowerText} onChange={(e) => setOvLowerText(e.target.value)} placeholder="Nama pembicara / channel" className="w-full px-3 py-2 bg-[#F5F5F4] border border-[#D6D3D1] rounded-xl text-xs text-[#1C1917] focus:border-[#C2410C] outline-none" />
+                            )}
                           </div>
                         </div>
 
@@ -2146,6 +2993,23 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                           </label>
                         </div>
 
+                        {/* Vocal Dynamics Audio Emotion Detection Toggle */}
+                        <div className="p-3 bg-[#F5F5F4] rounded-xl border border-[#E7E5E4] flex items-center justify-between">
+                          <div className="flex items-center space-x-2">
+                            <span className="text-base">🎙️</span>
+                            <div>
+                              <span className="text-xs font-bold text-[#1C1917] block">Deteksi Penekanan Vokal Otomatis (Vocal Dynamics)</span>
+                              <span className="text-[11px] text-[#78716C]">Kata tegas membesar dinamis (125%-135%) dan kata pelan mengecil halus</span>
+                            </div>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={enableVocalDynamics}
+                            onChange={(e) => setEnableVocalDynamics(e.target.checked)}
+                            className="w-4 h-4 accent-[#C2410C] cursor-pointer shrink-0"
+                          />
+                        </div>
+
                         {/* Font Selection */}
                         <div>
                           <label className="block text-xs font-semibold text-[#78716C] uppercase tracking-wider mb-1.5 flex items-center space-x-1.5">
@@ -2157,10 +3021,11 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                             onChange={(e) => setFont(e.target.value)}
                             className="w-full px-3 py-2 bg-[#F5F5F4] border border-[#D6D3D1] rounded-xl text-sm font-semibold text-[#1C1917] focus:border-[#C2410C] outline-none"
                           >
-                            <option value="Poppins">Poppins (Tebal & Modern - Direkomendasikan)</option>
-                            <option value="Inter">Inter (Clean Sans)</option>
-                            <option value="Playfair Display">Playfair Display (Serif Elegan)</option>
-                            <option value="Arial">Arial (Standar Universal)</option>
+                            {FONT_OPTIONS.map((f) => (
+                              <option key={f.value} value={f.value}>
+                                {f.label}
+                              </option>
+                            ))}
                           </select>
                         </div>
 
@@ -2488,6 +3353,81 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                             </div>
                           </div>
 
+                          {/* Sound Effects */}
+                          <div className="p-3 bg-[#F5F5F4] rounded-xl space-y-2.5">
+                            <label className="text-xs font-semibold text-[#78716C] uppercase tracking-wider flex items-center space-x-1.5">
+                              <span>🔔</span>
+                              <span>Sound Effects</span>
+                            </label>
+
+                            <div className="flex gap-2">
+                              <select
+                                value={sfxPickId}
+                                onChange={(e) => setSfxPickId(e.target.value)}
+                                disabled={audioMode === 'original'}
+                                className="flex-1 px-3 py-2 bg-white border border-[#D6D3D1] rounded-xl text-sm font-semibold text-[#1C1917] focus:border-[#C2410C] outline-none disabled:opacity-50"
+                              >
+                                <option value="">Pilih SFX...</option>
+                                {sfxList.map((s) => (
+                                  <option key={s.id} value={s.id}>{s.title}</option>
+                                ))}
+                              </select>
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.5"
+                                value={sfxPickAt}
+                                onChange={(e) => setSfxPickAt(parseFloat(e.target.value) || 0)}
+                                title="Offset detik dalam klip"
+                                className="w-20 px-2 py-2 bg-white border border-[#D6D3D1] rounded-xl text-sm font-mono text-[#1C1917] focus:border-[#C2410C] outline-none"
+                              />
+                              <button
+                                type="button"
+                                disabled={!sfxPickId || audioMode === 'original'}
+                                onClick={() => {
+                                  setSfxTriggers((prev) => [...prev, { sfx_id: sfxPickId, start_t: Math.max(0, sfxPickAt) }]);
+                                  setSfxPickId('');
+                                }}
+                                className="px-3 py-2 bg-[#C2410C] hover:bg-[#9A3412] text-white text-xs font-bold rounded-xl disabled:opacity-50"
+                              >
+                                + Tambah
+                              </button>
+                            </div>
+
+                            {sfxTriggers.length > 0 && (
+                              <div className="space-y-1.5">
+                                {sfxTriggers.map((t, i) => {
+                                  const s = sfxList.find((x) => x.id === t.sfx_id);
+                                  return (
+                                    <div key={i} className="flex items-center justify-between bg-white border border-[#E7E5E4] rounded-lg px-2.5 py-1.5 text-xs">
+                                      <span className="font-semibold text-[#1C1917]">🔔 {s?.title || t.sfx_id} <span className="font-mono text-[#78716C]">@{t.start_t}s</span></span>
+                                      <button type="button" onClick={() => setSfxTriggers((prev) => prev.filter((_, j) => j !== i))} className="text-[#78716C] hover:text-red-600 font-bold px-1">✕</button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+
+                            <label className="flex items-start justify-between gap-2 pt-1 border-t border-[#E7E5E4] cursor-pointer">
+                              <span>
+                                <span className="block text-xs font-semibold text-[#1C1917]">Otomatis saat skor hook tinggi</span>
+                                <span className="block text-[11px] text-[#78716C]">Mainkan SFX di 0.5 detik pertama bila skor ≥ ambang.</span>
+                              </span>
+                              <input type="checkbox" checked={sfxAuto} onChange={(e) => setSfxAuto(e.target.checked)} disabled={audioMode === 'original'} className="mt-1 w-4 h-4 accent-[#C2410C] cursor-pointer shrink-0" />
+                            </label>
+                            {sfxAuto && (
+                              <div className="flex gap-2">
+                                <select value={sfxAutoId} onChange={(e) => setSfxAutoId(e.target.value)} className="flex-1 px-3 py-2 bg-white border border-[#D6D3D1] rounded-xl text-sm font-semibold text-[#1C1917] focus:border-[#C2410C] outline-none">
+                                  <option value="">Pilih SFX...</option>
+                                  {sfxList.map((s) => (
+                                    <option key={s.id} value={s.id}>{s.title}</option>
+                                  ))}
+                                </select>
+                                <input type="number" min="0" max="100" step="1" value={sfxThreshold} onChange={(e) => setSfxThreshold(parseInt(e.target.value) || 0)} title="Ambang skor" className="w-20 px-2 py-2 bg-white border border-[#D6D3D1] rounded-xl text-sm font-mono text-[#1C1917] focus:border-[#C2410C] outline-none" />
+                              </div>
+                            )}
+                          </div>
+
                           {/* Voiceover */}
                           <div className="p-3 bg-[#F5F5F4] rounded-xl space-y-2.5">
                             <div className="flex items-center justify-between">
@@ -2594,13 +3534,25 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
 
                     {/* Render Progress Banner when active */}
                     {rendering && (
-                      <div className="p-4 bg-[#C2410C]/10 border border-[#C2410C]/20 rounded-xl space-y-2 animate-in fade-in duration-200">
-                        <div className="flex items-center justify-between text-xs font-semibold text-[#C2410C]">
-                          <span className="flex items-center space-x-1.5">
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span>{renderStatusMessage}</span>
+                      <div className="p-4 bg-[#C2410C]/10 border border-[#C2410C]/20 rounded-xl space-y-2 animate-in fade-in duration-200 sticky bottom-28 z-10 bg-white/95 backdrop-blur shadow-sm">
+                        <div className="flex items-center justify-between text-xs font-semibold text-[#C2410C] gap-2">
+                          <span className="flex items-center space-x-1.5 truncate">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                            <span className="truncate">{renderStatusMessage}</span>
                           </span>
-                          <span className="font-mono text-sm">{renderProgress}%</span>
+                          <div className="flex items-center space-x-2 shrink-0">
+                            <span className="font-mono text-sm">{renderProgress}%</span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRendering(false);
+                                showNotification('success', 'Render tetap berjalan di antrean background worker. Anda dapat memantau atau mengunduh hasilnya di halaman Shorts.');
+                              }}
+                              className="text-[11px] bg-white text-[#C2410C] hover:bg-[#FFF7ED] border border-[#C2410C]/30 px-2 py-0.5 rounded-md font-medium transition-all shadow-xs"
+                            >
+                              Jalankan di Background
+                            </button>
+                          </div>
                         </div>
                         <div className="w-full h-2 bg-[#C2410C]/20 rounded-full overflow-hidden">
                           <div
@@ -2612,7 +3564,7 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                     )}
 
                     {/* Render Button & Save */}
-                    <div className="pt-4 border-t border-[#D6D3D1] flex flex-col sm:flex-row items-center justify-between gap-4">
+                    <div className="shadow-md flex flex-col sm:flex-row items-center justify-between gap-4 sticky bottom-4 rounded p-4 bg-white">
                       <button
                         onClick={handleUpdateClip}
                         className="px-4 py-2 text-xs font-semibold text-[#57534E] hover:text-[#1C1917] hover:bg-[#E7E5E4] rounded-xl transition-all"
@@ -2640,8 +3592,28 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                     </div>
                   </div>
                 ) : (
-                  <div className="bg-white border border-dashed border-[#D6D3D1] rounded-2xl p-12 text-center text-[#78716C]">
-                    Pilih salah satu kandidat klip di sebelah kiri untuk mengedit framing dan subtitle.
+                  <div className="bg-white border border-[#E7E5E4] rounded-2xl p-12 text-center flex flex-col items-center justify-center space-y-4 shadow-xs min-h-[460px]">
+                    <div className="w-16 h-16 rounded-2xl bg-orange-50 text-[#C2410C] flex items-center justify-center text-2xl shadow-xs border border-orange-100">
+                      <Film className="w-8 h-8" />
+                    </div>
+                    <div className="space-y-1.5 max-w-md">
+                      <h3 className="text-base font-bold text-[#1C1917]">
+                        Pilih Kandidat Klip Terlebih Dahulu
+                      </h3>
+                      <p className="text-xs text-[#78716C] leading-relaxed">
+                        Klik salah satu kandidat klip AI di kolom sebelah kiri untuk membuka editor studio, mengatur framing visual, posisi subtitle, dan merender video 9:16.
+                      </p>
+                    </div>
+                    {clips.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => selectClipItem(clips[0])}
+                        className="mt-2 px-4 py-2 bg-[#FFF7ED] text-[#C2410C] border border-[#FDBA74] hover:bg-[#FFEDD5] text-xs font-bold rounded-xl transition-all flex items-center space-x-1.5"
+                      >
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Pilih Klip Terbaik Pertama ({clips[0].hook_score} Score)</span>
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

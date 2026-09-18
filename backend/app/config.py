@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # API
     VITE_API_BASE_URL: str = "/api"
 
+    # WhatsApp Bot (WAHA)
+    WAHA_BASE_URL: str = "http://localhost:3008"
+    WAHA_API_KEY: str = "embershorts_waha_secret_key"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

@@ -1,0 +1,68 @@
+{
+  "video_types": [
+    {
+      "id": "horror_misteri",
+      "name": "Horror / Misteri / Creepypasta",
+      "description": "Fokus pada momen klimaks ketakutan, jumpscare, penampakan/kejadian ganjil tak terduga, plot twist mengerikan, atau build-up cerita yang mencekam dan membuat merinding. Hindari bagian pengenalan yang bertele-tele.",
+      "hook_guidelines": "Awali tepat sebelum keanehan terjadi atau saat narator mengucapkan fakta yang menakutkan.",
+      "recommended_preset_id": "preset_documentary",
+      "tags": ["horror", "misteri", "creepy", "hantu", "penampakan", "jumpscare", "thriller", "mencekam"]
+    },
+    {
+      "id": "motivasi_quotes",
+      "name": "Motivasi / Self-Improvement / Quotes",
+      "description": "Fokus pada nasihat paling berbobot, kalimat penampar realita, prinsip disiplin & sukses, serta pesan inspiratif yang kuat dan langsung to the point.",
+      "hook_guidelines": "Awali dengan pertanyaan retoris tajam atau pernyataan kontroversial yang memicu refleksi diri dalam 3 detik pertama.",
+      "recommended_preset_id": "preset_golden_lux",
+      "tags": ["motivasi", "quotes", "sukses", "mindset", "inspirasi", "disiplin", "self-improvement", "kebiasaan"]
+    },
+    {
+      "id": "gaming_streamer",
+      "name": "Gaming / Streamer Gameplay",
+      "description": "Fokus pada momen clutch luar biasa, reaksi kaget/rage lucu, fail konyol, gameplay epic, duel menegangkan, atau interaksi seru dengan penonton.",
+      "hook_guidelines": "Awali saat situasi pertandingan genting atau sesaat sebelum teriakan/reaksi emosional terjadi.",
+      "recommended_preset_id": "preset_streamer_pip_circle",
+      "tags": ["gaming", "gameplay", "streamer", "clutch", "esports", "rage", "mabar", "funny gaming"]
+    },
+    {
+      "id": "edukasi_tech",
+      "name": "Edukasi / Tutorial / Teknologi",
+      "description": "Fokus pada tips praktis, cara cepat/life-hack, penjelasan konsep rumit secara sederhana dan padat, atau pengenalan fitur/alat baru yang bermanfaat langsung.",
+      "hook_guidelines": "Awali dengan 'Cara mudah untuk...' atau 'Jangan lakukan hal ini jika...' yang langsung menawarkan solusi.",
+      "recommended_preset_id": "preset_tech_tutorial_center",
+      "tags": ["edukasi", "tutorial", "teknologi", "tips", "trik", "coding", "software", "gadget", "lifehack"]
+    },
+    {
+      "id": "podcast_talkshow",
+      "name": "Podcast / Talkshow / Wawancara",
+      "description": "Fokus pada cerita rahasia pribadi yang belum pernah diungkapkan, perdebatan argumen menarik, sudut pandang unik tentang isu viral, atau candaan hangat antar pembicara.",
+      "hook_guidelines": "Awali dengan kalimat pengakuan mengejutkan dari narasumber ('Sebenarnya waktu itu saya...').",
+      "recommended_preset_id": "preset_minimalist",
+      "tags": ["podcast", "talkshow", "wawancara", "interview", "ngobrol", "curhat", "diskusi"]
+    },
+    {
+      "id": "komedi_meme",
+      "name": "Komedi / Meme / Reaksi Lucu",
+      "description": "Fokus pada timing punchline lelucon terbaik, kelakuan absurd, respons spontan yang membuat tertawa lepas, atau kejadian tak terduga yang kocak.",
+      "hook_guidelines": "Awali tepat sebelum setup lelucon agar penonton menunggu punchline yang meledak.",
+      "recommended_preset_id": "preset_impact_meme",
+      "tags": ["komedi", "lucu", "meme", "ngakak", "standup", "prank", "reaksi", "humor"]
+    },
+    {
+      "id": "bisnis_finance",
+      "name": "Bisnis / Finansial / Investasi",
+      "description": "Fokus pada strategi menghasilkan uang/omset, rahasia di balik kesuksesan brand besar, kesalahan fatal keuangan yang harus dihindari, atau trik penjualan.",
+      "hook_guidelines": "Awali dengan angka keuntungan/kerugian nyata ('Bagaimana cara bisnis ini menghasilkan 100 juta dalam 7 hari...').",
+      "recommended_preset_id": "preset_vocal_bebas",
+      "tags": ["bisnis", "uang", "cuan", "investasi", "saham", "crypto", "marketing", "omset", "finance"]
+    },
+    {
+      "id": "storytelling_fakta",
+      "name": "Storytelling / Fakta Unik / Sejarah",
+      "description": "Fokus pada fakta mengejutkan yang jarang diketahui, kronologi peristiwa dramatis, atau misteri sejarah dunia yang memikat rasa ingin tahu.",
+      "hook_guidelines": "Awali dengan 'Tahukah kamu bahwa...' atau 'Peristiwa paling aneh di tahun...'.",
+      "recommended_preset_id": "preset_cyberpunk",
+      "tags": ["fakta", "sejarah", "storytelling", "tahukah kamu", "dunia", "sains", "kisah", "ensiklopedia"]
+    }
+  ]
+}

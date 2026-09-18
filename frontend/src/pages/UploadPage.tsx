@@ -229,10 +229,12 @@ export const UploadPage: React.FC<UploadPageProps> = ({ onUploadSuccess, onNavig
           </div>
           <div>
             <h3 className="font-display font-bold text-2xl text-[#1C1917]">
-              {activeTab === 'youtube' ? 'Download Berhasil!' : 'Upload Berhasil!'}
+              {activeTab === 'youtube' ? 'Download Dimulai di Background!' : 'Upload Berhasil!'}
             </h3>
             <p className="text-sm text-[#57534E] max-w-md mx-auto mt-1">
-              Video telah tersimpan di folder <code className="font-mono text-xs bg-[#F5F5F4] px-1.5 py-0.5 rounded">storage/uploads/</code>. Pipeline ekstraksi audio & Whisper lokal otomatis berjalan di antrean.
+              {activeTab === 'youtube'
+                ? 'Video sedang diunduh dan diproses secara otomatis oleh sistem worker di background. Anda dapat langsung membuka Clip Studio atau memantau progresnya di Daftar Video.'
+                : 'Video telah tersimpan di folder storage/uploads/. Pipeline ekstraksi audio & Whisper lokal otomatis berjalan di antrean.'}
             </p>
           </div>
 

@@ -4,6 +4,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from app.database import Base, get_db
 import app.database as db_module
+import app.models
 from app.main import app
 
 TEST_DB_PATH = "storage/test_isolated.db"
@@ -31,6 +32,7 @@ async def setup_test_database():
 
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await db_module.init_db()
 
     async def override_get_db():
         async with TestSessionLocal() as session:

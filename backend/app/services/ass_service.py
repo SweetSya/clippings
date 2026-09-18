@@ -129,11 +129,14 @@ def generate_karaoke_ass(
     enable_dynamic_scaling: bool = False,
     enable_emoji_injection: bool = False,
     glow_effect: bool = False,
+    enable_vocal_dynamics: bool = False,
 ):
     """
     Generate an Advanced SubStation Alpha (.ass) subtitle file formatted for 9:16 vertical video.
-    Mendukung 5 motion types (single_word_pop, karaoke, background_box, typewriter, slide_up)
-    serta 4 efek visual (color shift, dynamic scaling, glow border, smart emoji injection).
+    Mendukung 8 motion types (single_word_pop, karaoke, background_box, typewriter, slide_up,
+    bounce_in, zoom_flash, glitch_reveal)
+    serta 4 efek visual (color shift, dynamic scaling, glow border, smart emoji injection)
+    dan deteksi penekanan vokal dinamis (vocal dynamics scaling).
     """
     active_ass = hex_to_ass(active_color)
     primary_ass = hex_to_ass(primary_color)
@@ -166,12 +169,17 @@ def generate_karaoke_ass(
         if is_uppercase:
             raw_text = raw_text.upper()
 
+        scale_mult = float(w.get("scale_multiplier", 1.0))
+        is_stressed = bool(w.get("is_vocal_stressed", False))
+
         if w_end > clip_start and w_start < clip_end:
             clip_words.append({
                 "word": raw_text,
                 "start": max(0.0, w_start - clip_start),
                 "end": max(0.0, min(w_end - clip_start, clip_end - clip_start)),
-                "is_kw": is_keyword(raw_text)
+                "is_kw": is_keyword(raw_text),
+                "scale_multiplier": scale_mult,
+                "is_vocal_stressed": is_stressed
             })
 
     events = []
@@ -195,15 +203,16 @@ def generate_karaoke_ass(
                 w_end = w_start + 0.28
             word_txt = item["word"]
             is_kw = item["is_kw"]
+            scale_mult = item["scale_multiplier"] if enable_vocal_dynamics else 1.0
 
-            # Pilih warna kata: keyword_color jika aktif keyword shift, selain itu active_color
-            word_col = keyword_ass if (is_kw and enable_keyword_color) else active_ass
+            # Pilih warna kata: keyword_color jika aktif keyword shift / stressed, selain itu active_color
+            word_col = keyword_ass if ((is_kw or item["is_vocal_stressed"]) and enable_keyword_color) else active_ass
             
-            # Dynamic scaling: kata kunci mendapat ukuran lebih besar (140% -> 120%)
+            # Dynamic scaling: kata kunci atau penekanan suara mendapat ukuran lebih besar
             if is_kw and enable_dynamic_scaling:
-                start_scale, end_scale = 140, 120
+                start_scale, end_scale = int(round(140 * scale_mult)), int(round(120 * scale_mult))
             else:
-                start_scale, end_scale = 125, 100
+                start_scale, end_scale = int(round(125 * scale_mult)), int(round(100 * scale_mult))
 
             # Tag override zoom pop transisi 70ms
             pop_tag = f"{{\\c{word_col}\\b1\\fscx{start_scale}\\fscy{start_scale}\\t(0,70,\\fscx{end_scale}\\fscy{end_scale})}}"
@@ -275,14 +284,19 @@ def generate_karaoke_ass(
                         word_txt = w["word"]
                         is_kw = w["is_kw"]
 
+                        w_scale_mult = w.get("scale_multiplier", 1.0) if enable_vocal_dynamics else 1.0
+                        w_is_stressed = w.get("is_vocal_stressed", False) if enable_vocal_dynamics else False
+
                         if idx == active_idx:
-                            scale_tag = r"\fscx115\fscy115" if (is_kw and enable_dynamic_scaling) else r"\fscx108\fscy108"
+                            base_scale = 115 if (is_kw and enable_dynamic_scaling) else 108
+                            final_scale = int(round(base_scale * w_scale_mult))
+                            scale_tag = f"\\fscx{final_scale}\\fscy{final_scale}"
                             # Active highlighter sticker: border tebal warna highlight_bg_ass dengan teks kontras gelap
                             sticker_tag = f"{{\\3c{highlight_bg_ass}\\bord7\\c&H0017191C&\\b1{scale_tag}}}"
                             reset_tag = f"{{\\3c&H00000000&\\bord{outline_width}\\c{primary_ass}\\b0\\fscx100\\fscy100}}"
                             line_parts.append(f"{sticker_tag}{word_txt}{reset_tag}")
                         else:
-                            if is_kw and enable_keyword_color:
+                            if (is_kw or w_is_stressed) and enable_keyword_color:
                                 line_parts.append(f"{{\\c{keyword_ass}\\b1}}{word_txt}{{\\c{primary_ass}\\b0}}")
                             else:
                                 line_parts.append(word_txt)
@@ -310,12 +324,17 @@ def generate_karaoke_ass(
                     for idx, w in enumerate(chunk):
                         word_txt = w["word"]
                         is_kw = w["is_kw"]
+                        w_scale_mult = w.get("scale_multiplier", 1.0) if enable_vocal_dynamics else 1.0
+                        w_is_stressed = w.get("is_vocal_stressed", False) if enable_vocal_dynamics else False
+
                         if idx == active_idx:
-                            col = keyword_ass if (is_kw and enable_keyword_color) else active_ass
-                            scale_tag = r"\fscx115\fscy115" if (is_kw and enable_dynamic_scaling) else r"\fscx108\fscy108"
+                            col = keyword_ass if ((is_kw or w_is_stressed) and enable_keyword_color) else active_ass
+                            base_scale = 115 if (is_kw and enable_dynamic_scaling) else 108
+                            final_scale = int(round(base_scale * w_scale_mult))
+                            scale_tag = f"\\fscx{final_scale}\\fscy{final_scale}"
                             line_parts.append(f"{{\\c{col}\\b1{scale_tag}}}{word_txt}{{\\c{primary_ass}\\b0\\fscx100\\fscy100}}")
                         else:
-                            if is_kw and enable_keyword_color:
+                            if (is_kw or w_is_stressed) and enable_keyword_color:
                                 line_parts.append(f"{{\\c{keyword_ass}\\b1}}{word_txt}{{\\c{primary_ass}\\b0}}")
                             else:
                                 line_parts.append(word_txt)
@@ -323,6 +342,129 @@ def generate_karaoke_ass(
                     # Jika kata pertama dalam chunk, sematkan animasi slide-up + fade
                     if active_idx == 0:
                         anim_prefix = f"{{\\an2\\move(540,{slide_from_y},540,{target_y},0,140)\\fad(140,80)}}"
+                    else:
+                        anim_prefix = f"{{\\an2\\pos(540,{target_y})}}"
+
+                    rendered_line = anim_prefix + " ".join(line_parts)
+                    events.append(
+                        f"Dialogue: 0,{format_ass_time(w_start)},{format_ass_time(w_end)},Caption,,0,0,0,,{rendered_line}"
+                    )
+
+        elif motion_type == "bounce_in":
+            # 6. Bounce In / Scene Entry dari atas (CapCut style)
+            # Tiap baris jatuh memantul dari atas layar ke posisi target + fade cepat
+            target_y = 1920 - v_margin
+            for chunk in chunks:
+                if not chunk:
+                    continue
+                for active_idx, target_word in enumerate(chunk):
+                    w_start = target_word["start"]
+                    w_end = target_word["end"]
+                    if w_end <= w_start:
+                        w_end = w_start + 0.3
+
+                    line_parts = []
+                    for idx, w in enumerate(chunk):
+                        word_txt = w["word"]
+                        is_kw = w["is_kw"]
+                        w_scale_mult = w.get("scale_multiplier", 1.0) if enable_vocal_dynamics else 1.0
+                        w_is_stressed = w.get("is_vocal_stressed", False) if enable_vocal_dynamics else False
+
+                        if idx == active_idx:
+                            col = keyword_ass if ((is_kw or w_is_stressed) and enable_keyword_color) else active_ass
+                            base_scale = 115 if (is_kw and enable_dynamic_scaling) else 108
+                            final_scale = int(round(base_scale * w_scale_mult))
+                            scale_tag = f"\\fscx{final_scale}\\fscy{final_scale}"
+                            line_parts.append(f"{{\\c{col}\\b1{scale_tag}}}{word_txt}{{\\c{primary_ass}\\b0\\fscx100\\fscy100}}")
+                        else:
+                            if (is_kw or w_is_stressed) and enable_keyword_color:
+                                line_parts.append(f"{{\\c{keyword_ass}\\b1}}{word_txt}{{\\c{primary_ass}\\b0}}")
+                            else:
+                                line_parts.append(word_txt)
+
+                    if active_idx == 0:
+                        anim_prefix = f"{{\\an2\\move(540,-50,540,{target_y},0,200)\\fad(120,80)}}"
+                    else:
+                        anim_prefix = f"{{\\an2\\pos(540,{target_y})}}"
+
+                    rendered_line = anim_prefix + " ".join(line_parts)
+                    events.append(
+                        f"Dialogue: 0,{format_ass_time(w_start)},{format_ass_time(w_end)},Caption,,0,0,0,,{rendered_line}"
+                    )
+
+        elif motion_type == "zoom_flash":
+            # 7. Zoom Flash / Kata kunci meledak 200% -> 100% + flash warna (CapCut zoom)
+            # Kata aktif discale besar lalu menyusut + flash active_color -> putih
+            for chunk in chunks:
+                if not chunk:
+                    continue
+                for active_idx, target_word in enumerate(chunk):
+                    w_start = target_word["start"]
+                    w_end = target_word["end"]
+                    if w_end <= w_start:
+                        w_end = w_start + 0.3
+
+                    line_parts = []
+                    for idx, w in enumerate(chunk):
+                        word_txt = w["word"]
+                        is_kw = w["is_kw"]
+                        w_scale_mult = w.get("scale_multiplier", 1.0) if enable_vocal_dynamics else 1.0
+                        w_is_stressed = w.get("is_vocal_stressed", False) if enable_vocal_dynamics else False
+
+                        if idx == active_idx:
+                            col = keyword_ass if ((is_kw or w_is_stressed) and enable_keyword_color) else active_ass
+                            zoom_tag = (
+                                f"{{\\c{col}\\b1\\fscx{int(round(200 * w_scale_mult))}"
+                                f"\\fscy{int(round(200 * w_scale_mult))}"
+                                f"\\t(0,150,\\fscx100\\fscy100)"
+                                f"\\t(0,150,\\1c{primary_ass})}}"
+                            )
+                            line_parts.append(f"{zoom_tag}{word_txt}{{\\c{primary_ass}\\b0\\fscx100\\fscy100\\1c{primary_ass}}}")
+                        else:
+                            if (is_kw or w_is_stressed) and enable_keyword_color:
+                                line_parts.append(f"{{\\c{keyword_ass}\\b1}}{word_txt}{{\\c{primary_ass}\\b0}}")
+                            else:
+                                line_parts.append(word_txt)
+
+                    rendered_line = " ".join(line_parts)
+                    events.append(
+                        f"Dialogue: 0,{format_ass_time(w_start)},{format_ass_time(w_end)},Caption,,0,0,0,,{rendered_line}"
+                    )
+
+        elif motion_type == "glitch_reveal":
+            # 8. Glitch Reveal / Efek glitch digital (shake horizontal + inversi sesaat)
+            # Offset bergantian deterministik per chunk agar mudah di-test (tanpa random)
+            target_y = 1920 - v_margin
+            for chunk_idx, chunk in enumerate(chunks):
+                if not chunk:
+                    continue
+                shake_x = 546 if chunk_idx % 2 == 0 else 534
+                for active_idx, target_word in enumerate(chunk):
+                    w_start = target_word["start"]
+                    w_end = target_word["end"]
+                    if w_end <= w_start:
+                        w_end = w_start + 0.3
+
+                    line_parts = []
+                    for idx, w in enumerate(chunk):
+                        word_txt = w["word"]
+                        is_kw = w["is_kw"]
+                        w_is_stressed = w.get("is_vocal_stressed", False) if enable_vocal_dynamics else False
+
+                        if idx == active_idx:
+                            col = keyword_ass if ((is_kw or w_is_stressed) and enable_keyword_color) else active_ass
+                            line_parts.append(f"{{\\c{col}\\b1}}{word_txt}{{\\c{primary_ass}\\b0}}")
+                        else:
+                            if (is_kw or w_is_stressed) and enable_keyword_color:
+                                line_parts.append(f"{{\\c{keyword_ass}\\b1}}{word_txt}{{\\c{primary_ass}\\b0}}")
+                            else:
+                                line_parts.append(word_txt)
+
+                    if active_idx == 0:
+                        anim_prefix = (
+                            f"{{\\an2\\pos({shake_x},{target_y})"
+                            f"\\1c&H0000FF00&\\t(0,80,\\1c{primary_ass}\\pos(540,{target_y}))}}"
+                        )
                     else:
                         anim_prefix = f"{{\\an2\\pos(540,{target_y})}}"
 
@@ -347,12 +489,17 @@ def generate_karaoke_ass(
                     for idx, w in enumerate(chunk):
                         word_txt = w["word"]
                         is_kw = w["is_kw"]
+                        w_scale_mult = w.get("scale_multiplier", 1.0) if enable_vocal_dynamics else 1.0
+                        w_is_stressed = w.get("is_vocal_stressed", False) if enable_vocal_dynamics else False
+
                         if idx == active_idx:
-                            col = keyword_ass if (is_kw and enable_keyword_color) else active_ass
-                            scale_tag = r"\fscx115\fscy115" if (is_kw and enable_dynamic_scaling) else r"\fscx108\fscy108"
+                            col = keyword_ass if ((is_kw or w_is_stressed) and enable_keyword_color) else active_ass
+                            base_scale = 115 if (is_kw and enable_dynamic_scaling) else 108
+                            final_scale = int(round(base_scale * w_scale_mult))
+                            scale_tag = f"\\fscx{final_scale}\\fscy{final_scale}"
                             line_parts.append(f"{{\\c{col}\\b1{scale_tag}}}{word_txt}{{\\c{primary_ass}\\b0\\fscx100\\fscy100}}")
                         else:
-                            if is_kw and enable_keyword_color:
+                            if (is_kw or w_is_stressed) and enable_keyword_color:
                                 line_parts.append(f"{{\\c{keyword_ass}\\b1}}{word_txt}{{\\c{primary_ass}\\b0}}")
                             else:
                                 line_parts.append(word_txt)
@@ -362,13 +509,15 @@ def generate_karaoke_ass(
                         f"Dialogue: 0,{format_ass_time(w_start)},{format_ass_time(w_end)},Caption,,0,0,0,,{rendered_line}"
                     )
 
-    # Glow neon effect outline styling
+    # Softened diffuse glow neon styling: pertahankan outline hitam pekat agar huruf tetap tajam
     if glow_effect:
-        outline_col = active_ass
-        effective_outline = max(4, outline_width + 1)
-        effective_shadow = max(2, shadow_depth + 1)
+        outline_col = "&H00000000"
+        back_col = hex_to_ass(active_color, alpha=0x60)
+        effective_outline = max(2, outline_width)
+        effective_shadow = max(3, shadow_depth + 2)
     else:
         outline_col = "&H00000000"
+        back_col = "&H80000000"
         effective_outline = outline_width
         effective_shadow = shadow_depth
 
@@ -380,7 +529,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,{font},{font_size},{primary_ass},&H000000FF,{outline_col},&H80000000,-1,0,0,0,100,100,0,0,1,{effective_outline},{effective_shadow},2,60,60,{v_margin},1
+Style: Caption,{font},{font_size},{primary_ass},&H000000FF,{outline_col},{back_col},-1,0,0,0,100,100,0,0,1,{effective_outline},{effective_shadow},2,60,60,{v_margin},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text

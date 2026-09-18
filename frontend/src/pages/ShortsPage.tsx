@@ -31,8 +31,8 @@ export const ShortsPage: React.FC = () => {
   // Layout mode & persistence
   const [layoutMode, setLayoutMode] = useState<'grid' | 'list'>('grid');
 
-  // Filters & Search
-  const [driveFilter, setDriveFilter] = useState<'all' | 'uploaded' | 'pending' | 'uploading'>('all');
+  // Filters & Search (Default to 'pending': show un-uploaded shorts first, hide uploaded by default)
+  const [driveFilter, setDriveFilter] = useState<'all' | 'uploaded' | 'pending' | 'uploading'>('pending');
   const [searchQuery, setSearchQuery] = useState('');
 
   // Multi-select & Batch

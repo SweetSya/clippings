@@ -2,10 +2,34 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Theme tokens (Phase 4 — 6.4). Kelas `ember-*` Tailwind merujuk ke variable ini,
+   sehingga komponen yang sudah memakai token otomatis ikut tema. */
+:root {
+  color-scheme: light;
+  --c-bg: 250 250 249;
+  --c-surface: 245 245 244;
+  --c-raised: 231 229 228;
+  --c-text: 28 25 23;
+  --c-text-dim: 87 83 78;
+  --c-muted: 120 113 108;
+  --c-border: 214 211 209;
+}
+
+.dark {
+  color-scheme: dark;
+  --c-bg: 12 10 9;
+  --c-surface: 28 25 23;
+  --c-raised: 41 37 36;
+  --c-text: 245 245 244;
+  --c-text-dim: 168 162 158;
+  --c-muted: 120 113 108;
+  --c-border: 68 64 60;
+}
+
 @layer base {
   body {
-    background-color: #FAFAF9;
-    color: #1C1917;
+    background-color: rgb(var(--c-bg));
+    color: rgb(var(--c-text));
     font-family: 'Source Sans 3', sans-serif;
   }
 
@@ -24,12 +48,12 @@
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #F5F5F4;
+  background: rgb(var(--c-surface));
 }
 ::-webkit-scrollbar-thumb {
-  background: #D6D3D1;
+  background: rgb(var(--c-border));
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #78716C;
+  background: rgb(var(--c-muted));
 }

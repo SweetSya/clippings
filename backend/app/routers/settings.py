@@ -15,7 +15,9 @@ from app.schemas import (
     GeneralSettingsRequest,
     UIPreferencesRequest,
     AITestRequest,
-    AITestResponse
+    AITestResponse,
+    YouTubeCookiesStatusResponse,
+    YouTubeCookiesSaveRequest
 )
 from app.core.security import get_current_session
 from app.core.crypto import encrypt_setting, decrypt_setting
@@ -58,6 +60,16 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
     prompt = await _get_val(db, "llm_prompt")
     llm_connected_str = await _get_val(db, "llm_connected")
     llm_connected = (llm_connected_str == "true")
+    two_pass_str = await _get_val(db, "llm_two_pass_enabled")
+    two_pass_enabled = (two_pass_str == "true")
+    chunk_strategy = (await _get_val(db, "llm_chunk_strategy")) or "auto"
+    vision_str = await _get_val(db, "llm_vision_enabled")
+    vision_enabled = (vision_str == "true")
+    vision_model = await _get_val(db, "llm_vision_model")
+    try:
+        vision_weight = float(await _get_val(db, "llm_vision_weight") or 0.3)
+    except (TypeError, ValueError):
+        vision_weight = 0.3
 
     gd_auth = (await _get_val(db, "gdrive_auth_type")) or "OAUTH2"
     gd_folder = await _get_val(db, "gdrive_folder_id")
@@ -88,6 +100,11 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
         llm_configured=bool(base_url and (api_key or "localhost" in base_url or "127.0.0.1" in base_url)),
         llm_connected=llm_connected,
         llm_prompt=prompt,
+        llm_two_pass_enabled=two_pass_enabled,
+        llm_chunk_strategy=chunk_strategy,
+        llm_vision_enabled=vision_enabled,
+        llm_vision_model=vision_model,
+        llm_vision_weight=vision_weight,
         gdrive_auth_type=gd_auth,
         gdrive_folder_id=gd_folder,
         gdrive_configured=gdrive_configured,
@@ -130,17 +147,51 @@ async def update_general_settings(payload: GeneralSettingsRequest, db: AsyncSess
 
 @router.post("/ai")
 async def update_ai_settings(payload: AISettingsRequest, db: AsyncSession = Depends(get_db)):
-    await _set_val(db, "llm_base_url", payload.base_url.strip(), is_encrypted=False)
+    base_url = payload.base_url.strip()
+    model = payload.model_name.strip()
+    await _set_val(db, "llm_base_url", base_url, is_encrypted=False)
+    
+    api_key = None
     if payload.api_key is not None:
         await _set_val(db, "llm_api_key", payload.api_key.strip(), is_encrypted=True)
-    await _set_val(db, "llm_model", payload.model_name.strip(), is_encrypted=False)
+        api_key = payload.api_key.strip()
+    else:
+        api_key_rec = await db.get(AppSetting, "llm_api_key")
+        if api_key_rec and api_key_rec.setting_value:
+            try:
+                api_key = decrypt_setting(api_key_rec.setting_value) if api_key_rec.is_encrypted else api_key_rec.setting_value
+            except Exception:
+                api_key = api_key_rec.setting_value
+
+    await _set_val(db, "llm_model", model, is_encrypted=False)
     await _set_val(db, "llm_temperature", str(payload.temperature), is_encrypted=False)
     if payload.prompt is not None:
         await _set_val(db, "llm_prompt", payload.prompt, is_encrypted=False)
-    # Require testing again when credentials or model change
-    await _set_val(db, "llm_connected", "false", is_encrypted=False)
+    if payload.two_pass_enabled is not None:
+        await _set_val(db, "llm_two_pass_enabled", "true" if payload.two_pass_enabled else "false", is_encrypted=False)
+    if payload.chunk_strategy is not None:
+        await _set_val(db, "llm_chunk_strategy", payload.chunk_strategy, is_encrypted=False)
+    if payload.vision_enabled is not None:
+        await _set_val(db, "llm_vision_enabled", "true" if payload.vision_enabled else "false", is_encrypted=False)
+    if payload.vision_model is not None:
+        await _set_val(db, "llm_vision_model", payload.vision_model.strip(), is_encrypted=False)
+    if payload.vision_weight is not None:
+        await _set_val(db, "llm_vision_weight", str(payload.vision_weight), is_encrypted=False)
+
+    # Automatically verify connection upon save
+    is_connected = False
+    if base_url:
+        try:
+            test_res = await test_llm_connection(base_url=base_url, api_key=api_key, model_name=model)
+            is_connected = bool(test_res.get("ok", False))
+        except Exception:
+            is_connected = False
+
+    await _set_val(db, "llm_connected", "true" if is_connected else "false", is_encrypted=False)
     await db.commit()
-    return {"status": "saved", "message": "Konfigurasi AI berhasil disimpan. Silakan klik 'Uji Koneksi AI' untuk memverifikasi status koneksi."}
+    
+    msg = "Konfigurasi AI berhasil disimpan dan diverifikasi terhubung!" if is_connected else "Konfigurasi AI berhasil disimpan ke database."
+    return {"status": "saved", "message": msg, "connected": is_connected}
 
 @router.post("/ai/test", response_model=AITestResponse)
 async def test_ai_route(payload: AITestRequest = None, db: AsyncSession = Depends(get_db)):
@@ -370,3 +421,82 @@ async def gdrive_oauth_callback(
             </body></html>""",
             status_code=400
         )
+
+
+@router.get("/youtube/cookies", response_model=YouTubeCookiesStatusResponse)
+async def get_youtube_cookies_status():
+    from app.services.youtube_service import get_youtube_cookies_path
+    import os
+    
+    path = get_youtube_cookies_path()
+    if path and os.path.exists(path):
+        size = os.path.getsize(path)
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                lines = len([l for l in f.readlines() if l.strip() and not l.strip().startswith("#")])
+        except Exception:
+            lines = 0
+        return YouTubeCookiesStatusResponse(
+            has_cookies=True,
+            file_path=path,
+            file_size_bytes=size,
+            line_count=lines
+        )
+    return YouTubeCookiesStatusResponse(has_cookies=False)
+
+
+@router.post("/youtube/cookies")
+async def save_youtube_cookies(payload: YouTubeCookiesSaveRequest):
+    content = payload.cookies_content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Konten cookies tidak boleh kosong.")
+    
+    import os
+    save_path = "storage/youtube_cookies.txt"
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    with open(save_path, "w", encoding="utf-8") as f:
+        f.write(content + "\n")
+    
+    # Also sync to /app/storage if different
+    if os.path.exists("/app/storage") and os.path.abspath("storage") != os.path.abspath("/app/storage"):
+        try:
+            with open("/app/storage/youtube_cookies.txt", "w", encoding="utf-8") as f:
+                f.write(content + "\n")
+        except Exception:
+            pass
+
+    return {
+        "status": "saved",
+        "message": "File YouTube cookies.txt berhasil disimpan. Ekstraksi video YouTube akan memprioritaskan sesi cookies ini.",
+        "has_cookies": True
+    }
+
+
+@router.delete("/youtube/cookies")
+async def delete_youtube_cookies():
+    import os
+    from app.services.youtube_service import get_youtube_cookies_path
+
+    path = get_youtube_cookies_path()
+    deleted = False
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+            deleted = True
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Gagal menghapus cookies: {e}")
+    
+    for c in ["storage/youtube_cookies.txt", "/app/storage/youtube_cookies.txt", "storage/cookies.txt", "/app/storage/cookies.txt"]:
+        if os.path.exists(c):
+            try:
+                os.remove(c)
+                deleted = True
+            except Exception:
+                pass
+
+    return {
+        "status": "deleted",
+        "message": "Cookies YouTube berhasil dihapus.",
+        "has_cookies": False
+    }
+

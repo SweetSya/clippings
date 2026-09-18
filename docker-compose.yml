@@ -1,6 +1,7 @@
 services:
   db-mysql:
     image: mysql:8.0
+    pull_policy: missing
     container_name: autoshorts-db
     restart: unless-stopped
     environment:
@@ -11,7 +12,7 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
     ports:
-      - "3306:3306"
+      - "3307:3306"
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "${MYSQL_USER:-autoshorts}", "-p${MYSQL_PASSWORD:-autoshorts_secure_password}"]
       interval: 10s
@@ -26,7 +27,9 @@ services:
     restart: unless-stopped
     env_file: .env
     volumes:
+      - ./storage:/app/storage
       - ./storage:/storage
+      - ./backend/app:/app/app
     ports:
       - "8000:8000"
     depends_on:
@@ -49,6 +52,26 @@ services:
     depends_on:
       - api-backend
 
+  waha:
+    image: devlikeapro/waha:arm
+    pull_policy: missing
+    container_name: autoshorts-waha
+    restart: unless-stopped
+    ports:
+      - "3008:3000"
+    environment:
+      - WAHA_API_KEY=${WAHA_API_KEY:-embershorts_waha_secret_key}
+      - WHATSAPP_HOOK_URL=http://api-backend:8000/api/waha/webhook
+      - WHATSAPP_HOOK_EVENTS=message,session.status
+      - WAHA_DASHBOARD_ENABLED=True
+      - WAHA_ZIP_LOGS=False
+      - WAHA_PRINT_QR=True
+    volumes:
+      - ./storage/waha:/app/.waha
+    depends_on:
+      - api-backend
+
 volumes:
   mysql_data:
     driver: local
+

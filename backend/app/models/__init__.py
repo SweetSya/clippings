@@ -9,7 +9,8 @@ from app.models.all_models import (
     AppJob,
     TTSGeneration,
     TextPreset,
-    AudioTrack
+    AudioTrack,
+    SFXTrack
 )
 
 __all__ = [
@@ -23,5 +24,6 @@ __all__ = [
     "AppJob",
     "TTSGeneration",
     "TextPreset",
-    "AudioTrack"
+    "AudioTrack",
+    "SFXTrack"
 ]

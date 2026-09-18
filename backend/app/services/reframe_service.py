@@ -220,6 +220,121 @@ async def detect_head_timeline(
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+# ------------------------------------------------------- face anchor (Phase 2 — 5.1)
+
+FACE_ZONE_TOP_THRESHOLD = 0.35
+FACE_ZONE_BOTTOM_THRESHOLD = 0.65
+FACE_ANCHOR_SAMPLE_FPS = 0.5
+FACE_ANCHOR_LOW_COVERAGE = 0.3
+
+# Zona → framing_layout existing (kategori preset streamer baru di Phase 3).
+FACE_ZONE_LAYOUT_MAP = {
+    "top": "split_top_bottom",      # wajah atas → person top
+    "bottom": "split_bottom_top",   # wajah bawah → person bottom
+    "center": "single",
+}
+
+
+@dataclass
+class FaceAnchorSample:
+    """Posisi tengah wajah relatif 0-1 pada satu frame sampel."""
+    cx: float
+    cy: float
+
+
+def classify_face_zone(avg_cy: float) -> str:
+    """Klasifikasi zona vertikal wajah. Pure function (tanpa I/O)."""
+    try:
+        cy = float(avg_cy)
+    except (TypeError, ValueError):
+        return "center"
+    if cy < FACE_ZONE_TOP_THRESHOLD:
+        return "top"
+    if cy > FACE_ZONE_BOTTOM_THRESHOLD:
+        return "bottom"
+    return "center"
+
+
+def recommend_layout_for_zone(zone: str) -> str:
+    """Petakan zona ke framing_layout existing. Pure function (tanpa I/O)."""
+    return FACE_ZONE_LAYOUT_MAP.get(zone, "single")
+
+
+def _detect_anchor_samples(frame_paths: Sequence[str]) -> Tuple[List[FaceAnchorSample], int]:
+    """
+    Deteksi wajah per frame sampel, ambil kotak terluas per frame.
+    Return (sampel, jumlah_frame). Pure-CPU, dipanggil via to_thread.
+    """
+    detector = _create_detector()
+    if detector is None:
+        return [], 0
+    samples: List[FaceAnchorSample] = []
+    total = 0
+    for path in frame_paths:
+        frame = cv2.imread(path)
+        if frame is None:
+            continue
+        total += 1
+        frame_h, frame_w = frame.shape[:2]
+        if frame_h <= 0 or frame_w <= 0:
+            continue
+        boxes = _detect_faces(detector, frame)
+        if not boxes:
+            continue
+        bx, by, bw, bh = max(boxes, key=lambda b: b[2] * b[3])
+        samples.append(FaceAnchorSample(
+            cx=(bx + bw / 2.0) / frame_w,
+            cy=(by + bh / 2.0) / frame_h,
+        ))
+    return samples, total
+
+
+async def analyze_face_anchor(
+    video_path: str,
+    clip_start: float,
+    clip_end: float,
+    sample_fps: float = FACE_ANCHOR_SAMPLE_FPS,
+) -> Dict[str, object]:
+    """
+    Analisis posisi rata-rata wajah dalam rentang klip (Phase 2 — 5.1).
+    Tak pernah raise untuk kasus degradasi (model hilang / tanpa wajah):
+    kembalikan coverage 0 + zona center agar caller fallback graceful.
+    """
+    result: Dict[str, object] = {
+        "avg_cx": 0.5, "avg_cy": 0.5, "face_coverage": 0.0,
+        "dominant_zone": "center",
+        "recommended_layout": "single",
+        "frames_sampled": 0, "frames_with_face": 0,
+    }
+    if not detection_available():
+        return result
+    work_dir = tempfile.mkdtemp(prefix="faceanchor_")
+    try:
+        try:
+            frames = await _extract_sample_frames(
+                video_path, clip_start, clip_end, sample_fps, work_dir, 0
+            )
+        except Exception as exc:
+            logger.warning("Face anchor: ekstraksi frame gagal: %s", exc)
+            return result
+        if not frames:
+            return result
+        samples, total = await asyncio.to_thread(_detect_anchor_samples, frames)
+        result["frames_sampled"] = total
+        result["frames_with_face"] = len(samples)
+        if total <= 0 or not samples:
+            return result
+        result["face_coverage"] = round(len(samples) / total, 3)
+        result["avg_cx"] = round(sum(s.cx for s in samples) / len(samples), 3)
+        result["avg_cy"] = round(sum(s.cy for s in samples) / len(samples), 3)
+        zone = classify_face_zone(result["avg_cy"])
+        result["dominant_zone"] = zone
+        result["recommended_layout"] = recommend_layout_for_zone(zone)
+        return result
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
 # ------------------------------------------------------------------------ perencanaan
 
 

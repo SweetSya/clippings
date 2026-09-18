@@ -20,6 +20,11 @@ import {
   GeneralSettingsUpdate,
   BatchActionResponse,
   SubtitleMotionType,
+  FramingLayout,
+  ScreenMode,
+  PersonShape,
+  WahaStatus,
+  WahaConfig,
 } from '../types';
 
 const api = axios.create({
@@ -110,6 +115,10 @@ export const videosApi = {
     const res = await api.post(`/videos/${videoId}/process`);
     return res.data;
   },
+  reanalyze: async (videoId: string, payload?: { min_dur?: number; max_dur?: number; custom_prompt_override?: string }) => {
+    const res = await api.post<{ status: string; video_id: string; overrides: Record<string, unknown> }>(`/videos/${videoId}/reanalyze`, payload || {});
+    return res.data;
+  },
   autoGenerate: async (videoId: string) => {
     const res = await api.post<{ message: string; clips_queued: number; status: string }>(`/videos/${videoId}/auto-generate`);
     return res.data;
@@ -166,6 +175,28 @@ export const clipsApi = {
     smart_deadzone?: number;
     smart_pan_seconds?: number;
     smart_snap?: boolean;
+    framing_layout?: FramingLayout | string;
+    screen_mode?: ScreenMode;
+    person_shape?: PersonShape;
+    person_scale?: number;
+    person_offset_x?: number;
+    person_offset_y?: number;
+    screen_offset_x?: number;
+    screen_offset_y?: number;
+    screen_scale?: number;
+    screen_aspect?: string;
+    video_filter?: string;
+    enable_intro_title?: boolean;
+    intro_title_duration?: number;
+    intro_title_style?: string;
+    enable_outro_cta?: boolean;
+    outro_cta_text?: string;
+    outro_cta_duration?: number;
+    enable_lower_third?: boolean;
+    lower_third_text?: string | null;
+    sticker_path?: string | null;
+    sticker_position?: string;
+    sticker_scale?: number;
     preset_id?: string | null;
     font: string;
     font_size: number;
@@ -183,20 +214,45 @@ export const clipsApi = {
     enable_dynamic_scaling?: boolean;
     enable_emoji_injection?: boolean;
     glow_effect?: boolean;
+    enable_vocal_dynamics?: boolean;
     use_voiceover?: boolean;
     narration_text?: string | null;
     narration_voice?: string | null;
     audio_track_id?: string | null;
     bgm_volume?: number;
     audio_mode?: AudioMode;
+    sfx_triggers?: { sfx_id: string; start_t: number; volume: number }[];
+    sfx_on_hook?: boolean;
+    sfx_hook_sfx_id?: string | null;
+    sfx_hook_threshold?: number;
   }) => {
     const res = await api.post<{ short_id: string; status: string }>(`/clips/${clipId}/render`, options);
+    return res.data;
+  },
+  batchRender: async (clipIds: string[], renderSettings?: any) => {
+    const res = await api.post<{ success_count: number; failed_count: number; message: string }>('/clips/batch-render', {
+      clip_ids: clipIds,
+      render_settings: renderSettings,
+    });
     return res.data;
   },
   getReframePreview: async (clipId: string, deadzone = 0.5, snap = false) => {
     const res = await api.get<ReframePreview>(`/clips/${clipId}/reframe-preview`, {
       params: { deadzone, snap },
     });
+    return res.data;
+  },
+  analyzeFaceAnchor: async (clipId: string) => {
+    const res = await api.post<{
+      clip_id: string;
+      dominant_zone: string;
+      avg_cx: number;
+      avg_cy: number;
+      face_coverage: number;
+      recommended_layout: string;
+      recommended_preset_id: string | null;
+      warning: string | null;
+    }>(`/clips/${clipId}/analyze-face-anchor`);
     return res.data;
   },
   generateNarration: async (clipId: string, payload: { style: NarrationStyle }) => {
@@ -216,6 +272,29 @@ export const clipsApi = {
     return `${base}${base.includes('?') ? '&' : '?'}t=${Date.now()}`;
   },
 };
+
+export const jobsApi = {
+  list: async (params?: { status?: string; job_type?: string; limit?: number }) => {
+    const res = await api.get<QueueJob[]>('/jobs', { params });
+    return res.data;
+  },
+};
+
+export interface QueueJob {
+  id: string;
+  job_type: string;
+  ref_id: string;
+  ref_kind: string;
+  ref_label: string;
+  status: string;
+  progress: number;
+  attempts: number;
+  max_attempts: number;
+  error_message?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
 
 export const shortsApi = {
   list: async (page = 1, limit = 20) => {
@@ -282,7 +361,7 @@ export const settingsApi = {
     const res = await api.get<SystemSettings>('/settings');
     return res.data;
   },
-  updateAI: async (payload: { base_url: string; api_key?: string; model_name: string; temperature: number; prompt?: string }) => {
+  updateAI: async (payload: { base_url: string; api_key?: string; model_name: string; temperature: number; prompt?: string; two_pass_enabled?: boolean; chunk_strategy?: string; vision_enabled?: boolean; vision_model?: string; vision_weight?: number }) => {
     const res = await api.post('/settings/ai', payload);
     return res.data;
   },
@@ -326,6 +405,18 @@ export const settingsApi = {
     const res = await api.post<{ ok: boolean; clip_view_mode: string; shorts_view_mode: string }>('/settings/ui-preferences', payload);
     return res.data;
   },
+  getYouTubeCookiesStatus: async () => {
+    const res = await api.get<{ has_cookies: boolean; file_path?: string; file_size_bytes?: number; line_count?: number }>('/settings/youtube/cookies');
+    return res.data;
+  },
+  saveYouTubeCookies: async (cookies_content: string) => {
+    const res = await api.post<{ status: string; message: string; has_cookies: boolean }>('/settings/youtube/cookies', { cookies_content });
+    return res.data;
+  },
+  deleteYouTubeCookies: async () => {
+    const res = await api.delete<{ status: string; message: string; has_cookies: boolean }>('/settings/youtube/cookies');
+    return res.data;
+  },
 };
 
 export const healthApi = {
@@ -350,6 +441,22 @@ export const presetsApi = {
   },
   remove: async (presetId: string) => {
     await api.delete(`/presets/${presetId}`);
+  },
+  resetBuiltins: async () => {
+    const res = await api.post<TextPreset[]>('/presets/reset-builtins');
+    return res.data;
+  },
+  exportPreset: async (presetId: string) => {
+    const res = await api.get(`/presets/${presetId}/export`);
+    return res.data;
+  },
+  importPreset: async (payload: Record<string, unknown>) => {
+    const res = await api.post<TextPreset>('/presets/import', payload);
+    return res.data;
+  },
+  duplicate: async (presetId: string) => {
+    const res = await api.post<TextPreset>(`/presets/${presetId}/duplicate`);
+    return res.data;
   },
 };
 
@@ -387,4 +494,66 @@ export const audioApi = {
   getStreamUrl: (track: AudioTrack) => getMediaUrl(track.stream_url),
 };
 
+export interface SFXTrack {
+  id: string;
+  title: string;
+  duration_seconds: number;
+  file_size_bytes: number;
+  is_builtin: boolean;
+  stream_url: string;
+  created_at: string;
+}
+
+export const sfxApi = {
+  list: async () => {
+    const res = await api.get<SFXTrack[]>('/sfx');
+    return res.data;
+  },
+  upload: async (file: File, title?: string) => {
+    const form = new FormData();
+    form.append('file', file);
+    if (title) form.append('title', title);
+    const res = await api.post<SFXTrack>('/sfx/upload', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return res.data;
+  },
+  remove: async (sfxId: string) => {
+    await api.delete(`/sfx/${sfxId}`);
+  },
+  getStreamUrl: (track: SFXTrack) => getMediaUrl(track.stream_url),
+};
+
+export const wahaApi = {
+  getStatus: async () => {
+    const res = await api.get<WahaStatus>('/waha/status');
+    return res.data;
+  },
+  updateConfig: async (payload: WahaConfig) => {
+    const res = await api.post<{ ok: boolean; message: string }>('/waha/config', payload);
+    return res.data;
+  },
+  startSession: async () => {
+    const res = await api.post<{ ok: boolean; message: string }>('/waha/session/start');
+    return res.data;
+  },
+  logoutSession: async () => {
+    const res = await api.post<{ ok: boolean; message: string }>('/waha/session/logout');
+    return res.data;
+  },
+  regenerateToken: async () => {
+    const res = await api.post<{ ok: boolean; token: string; message: string }>('/waha/token/regenerate');
+    return res.data;
+  },
+  unpair: async () => {
+    const res = await api.post<{ ok: boolean; message: string }>('/waha/unpair');
+    return res.data;
+  },
+  sendTestMessage: async (message?: string) => {
+    const res = await api.post<{ ok: boolean; message: string }>('/waha/test-message', { message });
+    return res.data;
+  },
+};
+
 export default api;
+

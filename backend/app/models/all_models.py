@@ -32,10 +32,12 @@ class SourceVideo(Base):
     file_size_bytes = Column(BigInteger, nullable=False)
     duration_seconds = Column(Float, nullable=False, default=0.0)
     language = Column(String(10), nullable=True)
+    video_type = Column(String(50), nullable=True)
     status = Column(String(30), nullable=False, default="UPLOADED")  # UPLOADED, EXTRACTING_AUDIO, TRANSCRIBING, ANALYZING, READY, FAILED
     error_message = Column(Text, nullable=True)
     description = Column(Text, nullable=True)
     auto_generate_shorts = Column(Boolean, default=False)
+    file_hash = Column(String(64), nullable=True)  # SHA256 1MB pertama (dedup transkrip)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     transcript = relationship("Transcript", back_populates="video", uselist=False, cascade="all, delete-orphan")
@@ -68,6 +70,10 @@ class ClipCandidate(Base):
     end_time_seconds = Column(Float, nullable=False)
     duration_seconds = Column(Float, nullable=False)
     hook_score = Column(Integer, default=0)
+    composite_score = Column(Integer, default=0)
+    speech_rate = Column(Float, default=0.0)
+    keyword_density = Column(Float, default=0.0)
+    face_coverage = Column(Float, default=0.0)
     virality_reason = Column(Text, nullable=True)
     is_selected = Column(Boolean, default=False)
     narration_text = Column(Text, nullable=True)
@@ -173,6 +179,17 @@ class TextPreset(Base):
     crop_offset_x = Column(Integer, default=0)
     smart_deadzone = Column(Float, default=0.5)
     smart_pan_seconds = Column(Float, default=0.5)
+    framing_layout = Column(String(30), default="single")  # single, pip_full, pip_center, split_top_bottom, split_bottom_top, fit_16_9_center
+    screen_mode = Column(String(20), default="full")  # full, center
+    person_shape = Column(String(20), default="circle")  # circle, rounded, rectangle
+    person_scale = Column(Float, default=0.35)  # Scale for PIP overlay (0.15 - 1.0)
+    person_offset_x = Column(Integer, default=0)
+    person_offset_y = Column(Integer, default=0)
+    screen_offset_x = Column(Integer, default=0)
+    screen_offset_y = Column(Integer, default=0)
+    screen_scale = Column(Float, default=1.0)
+    screen_aspect = Column(String(10), default="16:9")
+    video_filter = Column(String(20), default="none")  # none, cinematic, vivid, warm, cool, drama, vintage
 
     # 2. Text & Subtitles Styling
     font = Column(String(100), default="Poppins")
@@ -186,13 +203,32 @@ class TextPreset(Base):
     is_uppercase = Column(Boolean, default=False)
 
     # Subtitle Motion & Visual Emphasis
-    motion_type = Column(String(30), default="karaoke")  # single_word_pop, karaoke, background_box, typewriter, slide_up
+    motion_type = Column(String(30), default="karaoke")  # single_word_pop, karaoke, background_box, typewriter, slide_up, bounce_in, zoom_flash, glitch_reveal
     highlight_bg_color = Column(String(20), default="#FFCC00")
     enable_keyword_color = Column(Boolean, default=True)
     keyword_color = Column(String(20), default="#10B981")
     enable_dynamic_scaling = Column(Boolean, default=False)
     enable_emoji_injection = Column(Boolean, default=False)
     glow_effect = Column(Boolean, default=False)
+    enable_vocal_dynamics = Column(Boolean, default=False)
+
+    # 2b. Motion Graphics Overlay (Phase 3 — 3.1), semua default OFF
+    enable_intro_title = Column(Boolean, default=False)
+    intro_title_duration = Column(Float, default=1.5)
+    intro_title_style = Column(String(20), default="fade_slide")
+    enable_outro_cta = Column(Boolean, default=False)
+    outro_cta_text = Column(String(255), default="Follow untuk lebih banyak!")
+    outro_cta_duration = Column(Float, default=2.0)
+    enable_lower_third = Column(Boolean, default=False)
+    lower_third_text = Column(String(255), nullable=True)
+    sticker_path = Column(String(500), nullable=True)
+    sticker_position = Column(String(20), default="top_right")
+    sticker_scale = Column(Float, default=0.15)
+
+    # 2c. Sound Effect auto-trigger (Phase 3 — 3.2)
+    sfx_on_hook = Column(Boolean, default=False)
+    sfx_hook_sfx_id = Column(String(36), nullable=True)
+    sfx_hook_threshold = Column(Integer, default=90)
 
     # 3. Audio & Voiceover
     audio_track_id = Column(String(36), nullable=True)
@@ -204,6 +240,8 @@ class TextPreset(Base):
 
     # Meta
     is_builtin = Column(Boolean, default=False)
+    category = Column(String(20), default="text")  # text, full, streamer, podcast, educational, motivational, gaming
+    thumbnail_preview = Column(String(500), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -217,5 +255,18 @@ class AudioTrack(Base):
     local_path = Column(String(500), nullable=False)  # audio/{id}.mp3
     duration_seconds = Column(Float, default=0.0)
     file_size_bytes = Column(BigInteger, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class SFXTrack(Base):
+    """Sound effect pendek untuk trigger momen (Phase 3 — 3.2)."""
+    __tablename__ = "sfx_tracks"
+
+    id = Column(String(36), primary_key=True)  # UUID v4
+    title = Column(String(255), nullable=False)
+    local_path = Column(String(500), nullable=False)  # sfx/{id}.mp3
+    duration_seconds = Column(Float, default=0.0)
+    file_size_bytes = Column(BigInteger, default=0)
+    is_builtin = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 

@@ -1,5 +1,7 @@
 import os
 import glob
+import hashlib
+from typing import Optional
 from app.config import settings
 
 def resolve_path(relative_path: str) -> str:
@@ -70,3 +72,19 @@ def delete_short_artifacts(short_id: str, clip_id: str = None, local_path: str =
                 os.remove(ass_file)
             except OSError:
                 pass
+
+HASH_HEAD_BYTES = 1024 * 1024
+
+
+def hash_file_head(abs_path: str, n_bytes: int = HASH_HEAD_BYTES) -> Optional[str]:
+    """
+    SHA256 dari n_bytes pertama berkas (dedup praktis yang cepat).
+    Return None bila berkas tak terbaca. Pure I/O baca saja.
+    """
+    try:
+        hasher = hashlib.sha256()
+        with open(abs_path, "rb") as f:
+            hasher.update(f.read(n_bytes))
+        return hasher.hexdigest()
+    except OSError:
+        return None

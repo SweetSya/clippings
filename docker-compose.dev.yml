@@ -1,0 +1,35 @@
+# Override DEV: frontend jalan `npm run dev` (HMR) bukan nginx build.
+#
+# Pakai:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+# Balik ke production:
+#   docker compose up -d --build web-frontend
+#
+# Catatan: port 3000 hanya boleh dipakai satu service. Jangan jalankan
+# `npm run dev` lokal / start_local.sh bersamaan (atau stop dulu salah satu).
+
+services:
+  web-frontend:
+    # Nama image beda dari prod agar tak saling menimpa tag.
+    image: clipping-web-frontend-dev
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    # Install hanya bila node_modules volume masih kosong (start cepat setelahnya).
+    command: sh -c "[ -x node_modules/.bin/vite ] || npm install --no-audit --no-fund; npm run dev"
+    ports: !override
+      - "3000:3000"
+    environment:
+      # Proxy /api di vite.config.ts mengarah ke backend dalam network compose.
+      - VITE_PROXY_TARGET=http://api-backend:8000
+      # Aktifkan polling file-watch (bind mount macOS tak tembus inotify).
+      - DOCKER_DEV=1
+      - CHOKIDAR_USEPOLLING=true
+    volumes:
+      - ./frontend:/app
+      # node_modules Linux milik container (jangan tertimpa versi macOS host).
+      - frontend_node_modules:/app/node_modules
+
+volumes:
+  frontend_node_modules:
+    driver: local

@@ -9,16 +9,32 @@ import { TTSPage } from './pages/TTSPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AudioLibraryPage } from './pages/AudioLibraryPage';
 import { PresetPage } from './pages/PresetPage';
+import { QueuePage } from './pages/QueuePage';
 import { authApi, healthApi } from './services/api';
+import { parseHashRoute, buildHash, useHashNavigate, AppTab, VALID_TABS } from './hooks/useHashRoute';
 
 export const App: React.FC = () => {
-  const [currentTab, setCurrentTab] = useState('studio');
+  const initialRoute = parseHashRoute();
+  const [currentTab, setCurrentTab] = useState<string>(initialRoute.tab);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isConfigured, setIsConfigured] = useState(true);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [healthOk, setHealthOk] = useState(true);
-  const [selectedVideoId, setSelectedVideoId] = useState<string | null>(null);
+  const [selectedVideoId, setSelectedVideoId] = useState<string | null>(initialRoute.videoId);
   const [selectedAudioTrackId, setSelectedAudioTrackId] = useState<string | null>(null);
+
+  const navigateBase = useHashNavigate(setCurrentTab as (t: AppTab) => void, setSelectedVideoId);
+  // Pindah tab + tulis hash URL. Tab studio tanpa video eksplisit mempertahankan video aktif.
+  const navigate = (tab: AppTab, videoId?: string | null) => {
+    if (videoId === undefined && tab === 'studio') {
+      const current = parseHashRoute().videoId ?? selectedVideoIdRef.current;
+      navigateBase(tab, current);
+    } else {
+      navigateBase(tab, videoId);
+    }
+  };
+  const selectedVideoIdRef = React.useRef<string | null>(initialRoute.videoId);
+  selectedVideoIdRef.current = selectedVideoId;
 
   const checkAuth = async () => {
     try {
@@ -53,6 +69,17 @@ export const App: React.FC = () => {
     checkAuth();
     checkHealth();
 
+    // Pulihkan tab dari URL (refresh / back-forward browser).
+    const syncFromHash = () => {
+      const r = parseHashRoute();
+      setCurrentTab(r.tab);
+      setSelectedVideoId(r.videoId);
+    };
+    if (!window.location.hash) {
+      window.location.hash = buildHash(initialRoute.tab, initialRoute.videoId);
+    }
+    window.addEventListener('hashchange', syncFromHash);
+
     const handleUnauthorized = () => {
       setIsAuthenticated(false);
       setShowAuthModal(true);
@@ -62,6 +89,7 @@ export const App: React.FC = () => {
     const healthInterval = setInterval(checkHealth, 15000);
 
     return () => {
+      window.removeEventListener('hashchange', syncFromHash);
       window.removeEventListener('auth:unauthorized', handleUnauthorized);
       clearInterval(healthInterval);
     };
@@ -83,13 +111,12 @@ export const App: React.FC = () => {
   };
 
   const handleOpenStudio = (videoId: string) => {
-    setSelectedVideoId(videoId);
-    setCurrentTab('studio');
+    navigate('studio', videoId);
   };
 
   const handleUseAsBgm = (trackId: string) => {
     setSelectedAudioTrackId(trackId);
-    setCurrentTab('studio');
+    navigate('studio');
   };
 
   return (
@@ -105,7 +132,9 @@ export const App: React.FC = () => {
       {/* Persistent Sidebar */}
       <Sidebar
         currentTab={currentTab}
-        onTabChange={setCurrentTab}
+        onTabChange={(tab: string) => navigate(
+          (VALID_TABS as readonly string[]).includes(tab) ? (tab as AppTab) : 'studio'
+        )}
         onLogout={handleLogout}
         healthOk={healthOk}
       />
@@ -115,29 +144,30 @@ export const App: React.FC = () => {
         {currentTab === 'dashboard' && (
           <DashboardPage
             onSelectVideo={handleOpenStudio}
-            onNavigateUpload={() => setCurrentTab('upload')}
+            onNavigateUpload={() => navigate('upload')}
           />
         )}
         {currentTab === 'upload' && (
           <UploadPage
             onUploadSuccess={handleOpenStudio}
-            onNavigateDashboard={() => setCurrentTab('dashboard')}
+            onNavigateDashboard={() => navigate('dashboard')}
           />
         )}
         {currentTab === 'studio' && (
           <ClipStudioPage
             selectedVideoId={selectedVideoId}
             selectedAudioTrackId={selectedAudioTrackId}
-            onNavigateShorts={() => setCurrentTab('shorts')}
-            onNavigateSettings={() => setCurrentTab('settings')}
-            onNavigateAudioLibrary={() => setCurrentTab('audio')}
-            onNavigatePresets={() => setCurrentTab('preset')}
+            onNavigateShorts={() => navigate('shorts')}
+            onNavigateSettings={() => navigate('settings')}
+            onNavigateAudioLibrary={() => navigate('audio')}
+            onNavigatePresets={() => navigate('preset')}
           />
         )}
         {currentTab === 'shorts' && <ShortsPage />}
         {currentTab === 'tts' && <TTSPage />}
         {currentTab === 'audio' && <AudioLibraryPage onUseAsBgm={handleUseAsBgm} />}
         {currentTab === 'preset' && <PresetPage />}
+        {currentTab === 'queue' && <QueuePage />}
         {currentTab === 'settings' && <SettingsPage />}
       </main>
     </div>
