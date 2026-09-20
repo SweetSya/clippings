@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import logging
 import shutil
@@ -12,6 +13,7 @@ from app.models import (
     ClipCandidate,
     RenderedShort,
     GoogleDriveExport,
+    YouTubeExport,
     AppJob,
     AppSetting,
     AudioTrack,
@@ -21,8 +23,13 @@ from app.services.storage_service import resolve_path, hash_file_head
 from app.services.ffmpeg_service import probe_video, extract_audio, generate_thumbnail, render_vertical_clip
 from app.services.ass_service import generate_karaoke_ass
 from app.services.audio_dynamics_service import analyze_vocal_dynamics
-from app.services.whisper_service import transcribe_audio
-from app.services.llm_service import extract_highlights_with_llm, extract_highlights_two_pass, extract_highlights_chunked
+from app.services.whisper_service import transcribe_audio, compute_transcribe_timeout
+from app.services.llm_service import (
+    extract_highlights_with_llm,
+    extract_highlights_two_pass,
+    extract_highlights_chunked,
+    refine_transcript_with_llm,
+)
 from app.services.tts_service import generate_speech
 from app.services.gdrive_service import upload_file_to_drive
 from app.services.youtube_service import download_youtube_video
@@ -35,6 +42,29 @@ from app.core.crypto import decrypt_setting
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def extract_short_tts_title(title: str) -> str:
+    """
+    Ekstrak judul singkat yang bersih dan alami untuk dibacakan oleh AI TTS pada intro opening.
+    Menghilangkan gameplay tag, episode, hashtag, dan tanda baca berulang agar ringkas (~1-2 detik).
+    """
+    raw = str(title or "").strip()
+    if not raw:
+        return ""
+    # Hapus tag gameplay/episode di akhir
+    cleaned = re.sub(r"(?i)\b(gameplay|walkthrough|episode|eps|part|vol|ch|\#\d+).*$", "", raw).strip()
+    # Hapus titik-titik panjang, kurung metadata
+    cleaned = re.sub(r"\s*[.]{2,}\s*", " ", cleaned)
+    cleaned = re.sub(r"\[.*?\]|\(.*?\)", " ", cleaned)
+    cleaned = re.sub(r"[#_]+", " ", cleaned)
+    cleaned = re.sub(r"\s*-\s*$", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # Batasi ke ~8-9 kata agar dibacanya ringkas dan padat
+    words = cleaned.split()
+    if len(words) > 9:
+        cleaned = " ".join(words[:8])
+    return cleaned or raw[:40]
 
 
 async def try_reuse_transcript(db: AsyncSession, video: SourceVideo) -> bool:
@@ -137,6 +167,8 @@ async def handle_youtube_download(job: AppJob, db: AsyncSession):
 
     total_bytes = os.path.getsize(raw_video_path)
     video.file_size_bytes = total_bytes
+    if not getattr(video, "source_url", None):
+        video.source_url = url
 
     # 2. Probe metadata & duration
     try:
@@ -223,7 +255,85 @@ async def handle_transcribe(job: AppJob, db: AsyncSession):
     transcript_rel = f"transcripts/{video_id}.json"
     transcript_path = resolve_path(transcript_rel)
 
-    result = await transcribe_audio(audio_path, transcript_path)
+    # Bahasa: override per-job (re-transcribe) menang, else setting global. "auto" = deteksi.
+    payload_lang = None
+    try:
+        if isinstance(job.payload, dict):
+            payload_lang = job.payload.get("language")
+    except Exception:
+        payload_lang = None
+    whisper_lang = None
+    if isinstance(payload_lang, str) and payload_lang.strip() and payload_lang.strip().lower() != "auto":
+        whisper_lang = payload_lang.strip().lower()
+    else:
+        lang_s = await db.get(AppSetting, "whisper_language")
+        lang_val = (lang_s.setting_value if lang_s else "auto").strip().lower()
+        whisper_lang = lang_val if lang_val and lang_val != "auto" else None
+
+    async def update_transcribe_progress(pct: int):
+        try:
+            job.progress = pct
+            job.started_at = datetime.now(timezone.utc)
+            await db.commit()
+        except Exception:
+            pass
+
+    whisper_initial_prompt = (
+        f"Transkrip video: {video.original_name or ''}. "
+        "Bahasa Indonesia baku. Perhatikan istilah dan nama khusus: "
+        "Surah Ad-Dhuha, Al-Insyirah, Al-Fatihah, Rasulullah, sekaligus, insya Allah, alhamdulillah."
+    )
+
+    timeout = compute_transcribe_timeout(audio_path)
+    try:
+        result = await transcribe_audio(
+            audio_path,
+            transcript_path,
+            timeout_seconds=timeout,
+            language=whisper_lang,
+            initial_prompt=whisper_initial_prompt,
+            progress_callback=update_transcribe_progress
+        )
+    except TimeoutError as exc:
+        raise ValueError(str(exc))
+
+    # AI Context & Text Refinement: kirim transkrip ke AI untuk perbaikan ejaan fonetik & nama istilah
+    base_url_s = await db.get(AppSetting, "llm_base_url")
+    api_key_s = await db.get(AppSetting, "llm_api_key")
+    model_s = await db.get(AppSetting, "llm_model")
+    connected_s = await db.get(AppSetting, "llm_connected")
+    refine_toggle_s = await db.get(AppSetting, "llm_refine_transcript_enabled")
+
+    is_connected = bool(connected_s and str(connected_s.setting_value).lower() == "true")
+    refine_enabled = True if (refine_toggle_s is None or str(refine_toggle_s.setting_value).lower() in ["true", "1"]) else False
+
+    if is_connected and refine_enabled and base_url_s and base_url_s.setting_value:
+        try:
+            llm_base_url = base_url_s.setting_value
+            llm_api_key = None
+            if api_key_s:
+                try:
+                    llm_api_key = decrypt_setting(api_key_s.setting_value) if api_key_s.is_encrypted else api_key_s.setting_value
+                except Exception:
+                    llm_api_key = None
+            llm_model = model_s.setting_value if model_s else "gpt-4o-mini"
+
+            logger.info("Menjalankan AI Context & Text Refinement untuk video %s...", video_id)
+            refined_segments = await refine_transcript_with_llm(
+                segments=result.get("segments", []),
+                video_title=video.original_name or "",
+                video_desc=getattr(video, "description", None),
+                llm_base_url=llm_base_url,
+                llm_api_key=llm_api_key,
+                llm_model=llm_model,
+            )
+            result["segments"] = refined_segments
+            result["full_text"] = " ".join(s["text"].strip() for s in refined_segments if s.get("text"))
+            with open(transcript_path, "w", encoding="utf-8") as f:
+                json.dump(result, f, indent=2, ensure_ascii=False)
+            logger.info("AI Context & Text Refinement selesai disimpan untuk %s.", video_id)
+        except Exception as exc:
+            logger.warning("AI Context Refinement gagal, fallback ke transkrip asli: %s", exc)
 
     video.language = result.get("language")
     full_text = result.get("full_text", "")
@@ -417,13 +527,56 @@ async def handle_llm_analyze(job: AppJob, db: AsyncSession):
 
     # If auto_generate_shorts is enabled on this video, automatically queue 9:16 vertical renders!
     if getattr(video, "auto_generate_shorts", False) and created_clips:
+        from app.services.pipeline_rules import match_pipeline_preset, DEFAULT_PIPELINE_RULES
+
+        # 1. Ambil skor minimum pipeline
+        min_score_s = await db.get(AppSetting, "pipeline_min_score")
+        try:
+            min_score = float(min_score_s.setting_value) if min_score_s and min_score_s.setting_value else 70.0
+        except (ValueError, TypeError):
+            min_score = 70.0
+
+        # 2. Ambil context-to-preset rules
+        rules_s = await db.get(AppSetting, "pipeline_context_rules")
+        if rules_s and rules_s.setting_value:
+            try:
+                context_rules = json.loads(rules_s.setting_value)
+            except Exception:
+                context_rules = list(DEFAULT_PIPELINE_RULES)
+        else:
+            context_rules = list(DEFAULT_PIPELINE_RULES)
+
+        def_preset_s = await db.get(AppSetting, "pipeline_default_preset_id")
+        pipeline_def_preset = def_preset_s.setting_value if def_preset_s and def_preset_s.setting_value else None
+
+        queued_count = 0
         for clip in created_clips:
+            clip_score = float(clip.composite_score if clip.composite_score is not None else (clip.hook_score or 0))
+            if clip_score < min_score:
+                logger.info(
+                    "Auto-clip %s (%s) dilewati: skor %s di bawah ambang batas pipeline %s",
+                    clip.id, clip.title, clip_score, min_score
+                )
+                continue
+
+            # Tentukan preset berdasarkan context rules
+            matched_preset, matched_rule, match_reason = match_pipeline_preset(
+                video_type=video.video_type,
+                video_title=video.original_name,
+                video_desc=video_desc,
+                clip_title=clip.title,
+                rules=context_rules,
+                default_preset_id=pipeline_def_preset,
+                rec_preset_id=rec_preset_id
+            )
+            logger.info("Auto-clip %s memakai preset %s (%s)", clip.id, matched_preset, match_reason)
+
             short_id = uuid.uuid4().hex
             out_filename = f"{short_id}_9x16.mp4"
             rel_path = f"exports/{out_filename}"
             settings_dict = default_render_settings()
-            if rec_preset_id:
-                settings_dict["preset_id"] = rec_preset_id
+            if matched_preset:
+                settings_dict["preset_id"] = matched_preset
 
             short = RenderedShort(
                 id=short_id,
@@ -443,7 +596,13 @@ async def handle_llm_analyze(job: AppJob, db: AsyncSession):
                 payload=settings_dict
             )
             db.add(render_job)
+            queued_count += 1
+
         await db.commit()
+        logger.info(
+            "Auto-generate shorts untuk video %s selesai: %d dari %d klip memenuhi skor >= %s",
+            video.id, queued_count, len(created_clips), min_score
+        )
 
 async def handle_render(job: AppJob, db: AsyncSession):
     short_id = job.ref_id
@@ -497,8 +656,30 @@ async def handle_render(job: AppJob, db: AsyncSession):
 
     # Motion graphics overlay (Phase 3 — 3.1). Judul intro diambil dari judul klip.
     enable_intro_title = bool(pick("enable_intro_title", getattr(preset, "enable_intro_title", None) if preset else None, False))
-    intro_title_duration = float(pick("intro_title_duration", getattr(preset, "intro_title_duration", None) if preset else None, 1.5))
+    intro_title_duration = float(pick("intro_title_duration", getattr(preset, "intro_title_duration", None) if preset else None, 2.0))
     intro_title_style = str(pick("intro_title_style", getattr(preset, "intro_title_style", None) if preset else None, "fade_slide") or "fade_slide")
+    intro_title_tts = bool(pick("intro_title_tts", getattr(preset, "intro_title_tts", None) if preset else None, True))
+    intro_title_voice = str(pick("intro_title_voice", getattr(preset, "intro_title_voice", None) if preset else None, "id-ID-ArdiNeural") or "id-ID-ArdiNeural")
+    intro_title_pause = bool(pick("intro_title_pause", getattr(preset, "intro_title_pause", None) if preset else None, False))
+
+    # Sintesis audio AI untuk membaca judul intro hook di awal
+    intro_audio_path = None
+    if enable_intro_title and intro_title_tts:
+        tts_title = extract_short_tts_title(clip.title)
+        if tts_title:
+            try:
+                intro_rel = f"tts/{clip.id}_intro_title.mp3"
+                intro_abs = resolve_path(intro_rel)
+                os.makedirs(os.path.dirname(intro_abs), exist_ok=True)
+                dur = await generate_speech(tts_title, intro_abs, voice=intro_title_voice)
+                if os.path.exists(intro_abs) and dur > 0.3:
+                    intro_audio_path = intro_abs
+                    # Selaraskan durasi overlay agar tetap tampil selama suara AI membaca judul
+                    intro_title_duration = max(intro_title_duration, round(dur + 0.4, 1))
+            except Exception as e:
+                logger.warning("Gagal mensintesis audio AI untuk judul intro: %s", e)
+                intro_audio_path = None
+
     enable_outro_cta = bool(pick("enable_outro_cta", getattr(preset, "enable_outro_cta", None) if preset else None, False))
     outro_cta_text = str(pick("outro_cta_text", getattr(preset, "outro_cta_text", None) if preset else None, "Follow untuk lebih banyak!") or "Follow untuk lebih banyak!")
     outro_cta_duration = float(pick("outro_cta_duration", getattr(preset, "outro_cta_duration", None) if preset else None, 2.0))
@@ -641,6 +822,7 @@ async def handle_render(job: AppJob, db: AsyncSession):
     # 2. Generate ASS file
     ass_rel = f"subtitles/{clip.id}.ass"
     ass_path = resolve_path(ass_rel)
+    time_offset = intro_title_duration if intro_title_pause else 0.0
     generate_karaoke_ass(
         words=all_words,
         clip_start=clip.start_time_seconds,
@@ -663,7 +845,8 @@ async def handle_render(job: AppJob, db: AsyncSession):
         enable_emoji_injection=enable_emoji_injection,
         glow_effect=glow_effect,
         enable_vocal_dynamics=enable_vocal_dynamics,
-        fallback_title=clip.title
+        fallback_title=clip.title,
+        time_offset=time_offset,
     )
 
     # 3. Render 9:16 short with progress callback
@@ -744,13 +927,145 @@ async def handle_render(job: AppJob, db: AsyncSession):
         overlay_config=overlay_config,
         sfx_triggers=sfx_triggers,
         face_cy_ratio=face_cy_ratio,
+        intro_audio_path=intro_audio_path,
+        intro_title_duration=intro_title_duration,
+        intro_title_pause=intro_title_pause,
     )
 
     short.render_status = "COMPLETED"
     short.render_progress = 100
     if os.path.exists(output_path):
         short.file_size_bytes = os.path.getsize(output_path)
+
+    # 1. Generate smart thumbnail untuk rendered short
+    thumb_rel = f"thumbnails/{short.id}.jpg"
+    thumb_abs = resolve_path(thumb_rel)
+    try:
+        os.makedirs(os.path.dirname(thumb_abs), exist_ok=True)
+        if not os.path.exists(thumb_abs) and os.path.exists(output_path):
+            await generate_thumbnail(output_path, thumb_abs, seek_seconds=1.0, smart=True)
+            if os.path.exists(thumb_abs):
+                short.thumbnail_path = thumb_rel
+    except Exception as exc:
+        logger.warning("Auto thumbnail generation gagal untuk short %s: %s", short.id, exc)
+
     await db.commit()
+
+    # 2. Auto Upload to YouTube (jika setting aktif dan akun terhubung)
+    try:
+        yt_auto_setting = await db.get(AppSetting, "pipeline_auto_upload_youtube")
+        if not yt_auto_setting or yt_auto_setting.setting_value != "true":
+            yt_auto_setting = await db.get(AppSetting, "youtube_auto_upload")
+        yt_conn_setting = await db.get(AppSetting, "yt_upload_connected")
+        if (
+            yt_auto_setting
+            and yt_auto_setting.setting_value == "true"
+            and yt_conn_setting
+            and yt_conn_setting.setting_value == "true"
+            and not short.is_youtube_uploaded
+        ):
+            existing_yt = await db.scalar(
+                select(YouTubeExport).where(
+                    YouTubeExport.short_id == short.id,
+                    YouTubeExport.upload_status.in_(["QUEUED", "UPLOADING", "SUCCESS"])
+                )
+            )
+            if not existing_yt:
+                # Susun metadata kontekstual dari clip & source video
+                raw_title = ""
+                if clip.seo_titles and isinstance(clip.seo_titles, list) and len(clip.seo_titles) > 0:
+                    raw_title = str(clip.seo_titles[0]).strip()
+                if not raw_title:
+                    raw_title = clip.title or short.output_filename or "Short Video"
+
+                if "#shorts" not in raw_title.lower() and len(raw_title) <= 92:
+                    yt_title = f"{raw_title} #shorts"[:100]
+                else:
+                    yt_title = raw_title[:100]
+
+                desc_parts = []
+                if video and video.source_url:
+                    desc_parts.append(f"🎬 Video asli: {video.original_name or clip.title or 'YouTube'}\n🔗 {video.source_url}")
+                if clip.seo_description:
+                    desc_parts.append(clip.seo_description.strip())
+
+                tags_list = []
+                if clip.seo_tags and isinstance(clip.seo_tags, list):
+                    tags_list = [str(t).strip() for t in clip.seo_tags if str(t).strip()][:15]
+
+                hashtags_list = []
+                if clip.seo_hashtags and isinstance(clip.seo_hashtags, list):
+                    hashtags_list = [str(h).strip() if str(h).startswith("#") else f"#{str(h).strip()}" for h in clip.seo_hashtags][:10]
+                elif tags_list:
+                    hashtags_list = [f"#{t.replace(' ', '')}" for t in tags_list[:5]]
+
+                if "#shorts" not in [h.lower() for h in hashtags_list]:
+                    hashtags_list.insert(0, "#shorts")
+
+                if hashtags_list:
+                    desc_parts.append(" ".join(hashtags_list))
+
+                yt_desc = "\n\n".join(desc_parts)[:5000] if desc_parts else None
+
+                priv_rec = await db.get(AppSetting, "youtube_default_privacy")
+                privacy_status = priv_rec.setting_value if priv_rec and priv_rec.setting_value in ("public", "unlisted", "private") else "public"
+
+                cat_rec = await db.get(AppSetting, "youtube_default_category")
+                category_id = cat_rec.setting_value if cat_rec and cat_rec.setting_value else "22"
+
+                kids_rec = await db.get(AppSetting, "youtube_default_made_for_kids")
+                made_for_kids = (kids_rec.setting_value == "true") if kids_rec else False
+
+                auto_thumb_path = thumb_rel if os.path.exists(thumb_abs) else None
+
+                auto_export = YouTubeExport(
+                    id=uuid.uuid4().hex,
+                    short_id=short.id,
+                    title=yt_title,
+                    description=yt_desc,
+                    tags=tags_list,
+                    hashtags=hashtags_list,
+                    privacy_status=privacy_status,
+                    category_id=category_id,
+                    made_for_kids=made_for_kids,
+                    custom_thumbnail_path=auto_thumb_path,
+                    upload_status="QUEUED",
+                    upload_progress=0,
+                )
+                db.add(auto_export)
+                db.add(AppJob(id=uuid.uuid4().hex, job_type="YOUTUBE_UPLOAD", ref_id=auto_export.id, status="QUEUED"))
+                await db.commit()
+                logger.info("Auto-enqueued YouTube upload for short %s (export_id=%s)", short.id, auto_export.id)
+    except Exception as exc:
+        logger.warning("Gagal auto-enqueue YouTube upload untuk short %s: %s", short.id, exc)
+
+    # 3. Auto Upload to Google Drive (jika setting aktif dan belum diupload)
+    try:
+        gd_auto_setting = await db.get(AppSetting, "pipeline_auto_upload_gdrive")
+        if (
+            gd_auto_setting
+            and gd_auto_setting.setting_value == "true"
+            and not short.is_drive_uploaded
+        ):
+            existing_gd = await db.scalar(
+                select(GoogleDriveExport).where(
+                    GoogleDriveExport.short_id == short.id,
+                    GoogleDriveExport.upload_status.in_(["QUEUED", "UPLOADING", "SUCCESS"])
+                )
+            )
+            if not existing_gd:
+                auto_gd = GoogleDriveExport(
+                    id=uuid.uuid4().hex,
+                    short_id=short.id,
+                    upload_status="QUEUED",
+                    upload_progress=0
+                )
+                db.add(auto_gd)
+                db.add(AppJob(id=uuid.uuid4().hex, job_type="GDRIVE_UPLOAD", ref_id=auto_gd.id, status="QUEUED"))
+                await db.commit()
+                logger.info("Auto-enqueued Google Drive upload for short %s (export_id=%s)", short.id, auto_gd.id)
+    except Exception as exc:
+        logger.warning("Gagal auto-enqueue Google Drive upload untuk short %s: %s", short.id, exc)
 
 async def handle_gdrive_upload(job: AppJob, db: AsyncSession):
     export_id = job.ref_id
@@ -820,3 +1135,103 @@ async def handle_gdrive_upload(job: AppJob, db: AsyncSession):
     # Mark short as uploaded to guard against double uploading!
     short.is_drive_uploaded = True
     await db.commit()
+
+async def handle_youtube_upload(job: AppJob, db: AsyncSession):
+    export_id = job.ref_id
+    export_rec = await db.get(YouTubeExport, export_id)
+    if not export_rec:
+        raise ValueError(f"YouTube export record {export_id} not found")
+
+    short = await db.get(RenderedShort, export_rec.short_id)
+    if not short:
+        raise ValueError(f"Rendered short {export_rec.short_id} not found")
+
+    # Anti-double uploading check:
+    if short.is_youtube_uploaded and export_rec.youtube_video_id:
+        export_rec.upload_status = "SUCCESS"
+        export_rec.upload_progress = 100
+        await db.commit()
+        return
+
+    export_rec.upload_status = "UPLOADING"
+    export_rec.upload_progress = 0
+    await db.commit()
+
+    # Read credentials from app_settings
+    cid_s = await db.get(AppSetting, "yt_upload_client_id")
+    csec_s = await db.get(AppSetting, "yt_upload_client_secret")
+    rt_s = await db.get(AppSetting, "yt_upload_refresh_token")
+    if not cid_s or not csec_s or not rt_s:
+        raise ValueError("Akun YouTube belum terhubung. Hubungkan di Pengaturan → YouTube.")
+    creds_data = {
+        "client_id": cid_s.setting_value,
+        "client_secret": decrypt_setting(csec_s.setting_value) if csec_s.is_encrypted else csec_s.setting_value,
+        "refresh_token": decrypt_setting(rt_s.setting_value) if rt_s.is_encrypted else rt_s.setting_value,
+    }
+
+    file_path = resolve_path(short.local_path)
+    if not os.path.exists(file_path):
+        raise ValueError(f"Berkas video {short.local_path} tidak ditemukan di storage")
+
+    from app.services.youtube_upload_service import upload_video_to_youtube, set_youtube_thumbnail
+
+    def sync_progress(pct: int):
+        export_rec.upload_progress = pct
+
+    res = await upload_video_to_youtube(
+        file_path=file_path,
+        title=export_rec.title,
+        description=export_rec.description or "",
+        tags=list(export_rec.tags or []),
+        category_id=export_rec.category_id or "22",
+        privacy_status=export_rec.privacy_status or "public",
+        made_for_kids=getattr(export_rec, "made_for_kids", False),
+        credentials_data=creds_data,
+        progress_callback=sync_progress
+    )
+
+    export_rec.upload_status = "SUCCESS"
+    export_rec.upload_progress = 100
+    export_rec.youtube_video_id = res["video_id"]
+    export_rec.youtube_url = res["youtube_url"]
+    export_rec.uploaded_at = datetime.now(timezone.utc)
+
+    # Custom / auto thumbnail best-effort (gagal thumbnail ≠ gagal upload video)
+    thumb_rel = export_rec.custom_thumbnail_path
+    if not thumb_rel:
+        cand_short_thumb = f"thumbnails/{short.id}.jpg"
+        if os.path.exists(resolve_path(cand_short_thumb)):
+            thumb_rel = cand_short_thumb
+        elif hasattr(short, "thumbnail_path") and short.thumbnail_path and os.path.exists(resolve_path(short.thumbnail_path)):
+            thumb_rel = short.thumbnail_path
+
+    thumb_abs = resolve_path(thumb_rel) if thumb_rel else None
+    if not thumb_abs or not os.path.exists(thumb_abs):
+        auto_thumb = resolve_path(f"thumbnails/{short.id}.jpg")
+        try:
+            os.makedirs(os.path.dirname(auto_thumb), exist_ok=True)
+            await generate_thumbnail(file_path, auto_thumb, seek_seconds=1.0, smart=True)
+            if os.path.exists(auto_thumb):
+                thumb_abs = auto_thumb
+                export_rec.custom_thumbnail_path = f"thumbnails/{short.id}.jpg"
+        except Exception as exc:
+            logger.warning("On-the-fly thumbnail generation gagal untuk YouTube upload: %s", exc)
+
+    if thumb_abs and os.path.exists(thumb_abs):
+        try:
+            await set_youtube_thumbnail(res["video_id"], thumb_abs, creds_data)
+        except Exception as exc:
+            logger.warning("Thumbnail YouTube gagal (best-effort): %s", exc)
+
+    # Mark short as uploaded to guard against double uploading!
+    short.is_youtube_uploaded = True
+    await db.commit()
+
+    # Trigger consolidated WhatsApp summary notification check for parent video
+    try:
+        from app.services.pipeline_rules import check_and_send_consolidated_whatsapp_summary
+        clip_rec = await db.get(ClipCandidate, short.clip_id)
+        if clip_rec and clip_rec.video_id:
+            await check_and_send_consolidated_whatsapp_summary(clip_rec.video_id, db)
+    except Exception as exc:
+        logger.warning("Gagal memeriksa / mengirim notifikasi WhatsApp konsolidasi: %s", exc)

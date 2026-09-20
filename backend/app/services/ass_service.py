@@ -130,6 +130,7 @@ def generate_karaoke_ass(
     enable_emoji_injection: bool = False,
     glow_effect: bool = False,
     enable_vocal_dynamics: bool = False,
+    time_offset: float = 0.0,
 ):
     """
     Generate an Advanced SubStation Alpha (.ass) subtitle file formatted for 9:16 vertical video.
@@ -137,6 +138,7 @@ def generate_karaoke_ass(
     bounce_in, zoom_flash, glitch_reveal)
     serta 4 efek visual (color shift, dynamic scaling, glow border, smart emoji injection)
     dan deteksi penekanan vokal dinamis (vocal dynamics scaling).
+    `time_offset` menggeser seluruh timestamp subtitle (misal saat jeda intro freeze frame aktif).
     """
     active_ass = hex_to_ass(active_color)
     primary_ass = hex_to_ass(primary_color)
@@ -175,8 +177,8 @@ def generate_karaoke_ass(
         if w_end > clip_start and w_start < clip_end:
             clip_words.append({
                 "word": raw_text,
-                "start": max(0.0, w_start - clip_start),
-                "end": max(0.0, min(w_end - clip_start, clip_end - clip_start)),
+                "start": max(0.0, (w_start - clip_start) + time_offset),
+                "end": max(0.0, min(w_end - clip_start, clip_end - clip_start) + time_offset),
                 "is_kw": is_keyword(raw_text),
                 "scale_multiplier": scale_mult,
                 "is_vocal_stressed": is_stressed

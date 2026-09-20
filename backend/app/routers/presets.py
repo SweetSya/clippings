@@ -57,8 +57,11 @@ def _to_response(p: TextPreset) -> TextPresetResponse:
         narration_voice=p.narration_voice or "id-ID-ArdiNeural",
         narration_style=p.narration_style or "hook_story",
         enable_intro_title=bool(p.enable_intro_title),
-        intro_title_duration=p.intro_title_duration if p.intro_title_duration is not None else 1.5,
+        intro_title_duration=p.intro_title_duration if p.intro_title_duration is not None else 2.0,
         intro_title_style=p.intro_title_style or "fade_slide",
+        intro_title_tts=bool(p.intro_title_tts) if getattr(p, "intro_title_tts", None) is not None else True,
+        intro_title_voice=getattr(p, "intro_title_voice", None) or "id-ID-ArdiNeural",
+        intro_title_pause=bool(getattr(p, "intro_title_pause", False)),
         enable_outro_cta=bool(p.enable_outro_cta),
         outro_cta_text=p.outro_cta_text or "Follow untuk lebih banyak!",
         outro_cta_duration=p.outro_cta_duration if p.outro_cta_duration is not None else 2.0,
@@ -161,8 +164,11 @@ def _build_preset_from_validated(validated: TextPresetCreate, name_override: str
         narration_voice=validated.narration_voice,
         narration_style=validated.narration_style,
         enable_intro_title=validated.enable_intro_title,
-        intro_title_duration=validated.intro_title_duration if validated.intro_title_duration is not None else 1.5,
+        intro_title_duration=validated.intro_title_duration if validated.intro_title_duration is not None else 2.0,
         intro_title_style=validated.intro_title_style or "fade_slide",
+        intro_title_tts=validated.intro_title_tts if validated.intro_title_tts is not None else True,
+        intro_title_voice=validated.intro_title_voice or "id-ID-ArdiNeural",
+        intro_title_pause=bool(validated.intro_title_pause),
         enable_outro_cta=validated.enable_outro_cta,
         outro_cta_text=validated.outro_cta_text or "Follow untuk lebih banyak!",
         outro_cta_duration=validated.outro_cta_duration if validated.outro_cta_duration is not None else 2.0,
@@ -293,8 +299,11 @@ async def create_preset(payload: TextPresetCreate, db: AsyncSession = Depends(ge
         narration_voice=payload.narration_voice,
         narration_style=payload.narration_style,
         enable_intro_title=payload.enable_intro_title,
-        intro_title_duration=payload.intro_title_duration if payload.intro_title_duration is not None else 1.5,
+        intro_title_duration=payload.intro_title_duration if payload.intro_title_duration is not None else 2.0,
         intro_title_style=payload.intro_title_style or "fade_slide",
+        intro_title_tts=payload.intro_title_tts if payload.intro_title_tts is not None else True,
+        intro_title_voice=payload.intro_title_voice or "id-ID-ArdiNeural",
+        intro_title_pause=bool(payload.intro_title_pause),
         enable_outro_cta=payload.enable_outro_cta,
         outro_cta_text=payload.outro_cta_text or "Follow untuk lebih banyak!",
         outro_cta_duration=payload.outro_cta_duration if payload.outro_cta_duration is not None else 2.0,
@@ -416,6 +425,12 @@ async def update_preset(preset_id: str, payload: TextPresetUpdate, db: AsyncSess
         preset.intro_title_duration = payload.intro_title_duration
     if payload.intro_title_style is not None:
         preset.intro_title_style = payload.intro_title_style
+    if payload.intro_title_tts is not None:
+        preset.intro_title_tts = payload.intro_title_tts
+    if payload.intro_title_voice is not None:
+        preset.intro_title_voice = payload.intro_title_voice
+    if payload.intro_title_pause is not None:
+        preset.intro_title_pause = payload.intro_title_pause
     if payload.enable_outro_cta is not None:
         preset.enable_outro_cta = payload.enable_outro_cta
     if payload.outro_cta_text is not None:

@@ -11,7 +11,8 @@ import {
   LogOut,
   Flame,
   Activity,
-  ListOrdered
+  ListOrdered,
+  Workflow
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -32,8 +33,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'studio', label: 'Clip Studio', icon: Sparkles },
     { id: 'shorts', label: 'Hasil Shorts & Drive', icon: Smartphone },
     { id: 'queue', label: 'Antrean Worker', icon: ListOrdered },
-    { id: 'audio', label: 'Audio Library', icon: Music },
+    { id: 'pipeline', label: 'Pipeline Otomatis', icon: Workflow },
     { id: 'preset', label: 'Preset', icon: Bookmark },
+    { id: 'audio', label: 'Audio Library', icon: Music },
     { id: 'tts', label: 'Text-to-Speech', icon: Mic },
     { id: 'dashboard', label: 'Daftar Video', icon: Film },
     { id: 'settings', label: 'Pengaturan', icon: Settings },

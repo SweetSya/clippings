@@ -17,6 +17,8 @@ from app.schemas import (
     FaceAnchorResponse,
     GenerateNarrationRequest,
     GenerateNarrationResponse,
+    SEOGenerateRequest,
+    SEOGenerateResponse,
     SynthesizeVoiceRequest,
     SynthesizeVoiceResponse,
 )
@@ -58,6 +60,10 @@ def _to_clip_response(clip: ClipCandidate) -> ClipCandidateResponse:
         narration_text=clip.narration_text,
         narration_voice=clip.narration_voice,
         narration_audio_path=clip.narration_audio_path,
+        seo_titles=list(clip.seo_titles or []) or None,
+        seo_description=clip.seo_description,
+        seo_tags=list(clip.seo_tags or []) or None,
+        seo_hashtags=list(clip.seo_hashtags or []) or None,
         created_at=clip.created_at.isoformat() if clip.created_at else ""
     )
 
@@ -280,6 +286,102 @@ async def generate_clip_narration_endpoint(
         clip_id=clip.id,
         narration_text=narration,
         estimated_duration_seconds=estimated_dur
+    )
+
+
+@router.post("/{clip_id}/generate-seo", response_model=SEOGenerateResponse, dependencies=[Depends(get_current_session)])
+async def generate_clip_seo_endpoint(
+    clip_id: str,
+    payload: SEOGenerateRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Generate metadata SEO siap-publish (judul, deskripsi, tags, hashtags).
+    LLM bila connected, else template heuristik — tak pernah 400 karena AI mati.
+    Hasil disimpan ke klip agar modal upload bisa preload.
+    """
+    from app.services.seo_service import generate_youtube_seo, generate_tiktok_seo
+
+    clip = await db.get(ClipCandidate, clip_id)
+    if not clip:
+        raise HTTPException(status_code=404, detail="Kandidat klip tidak ditemukan.")
+
+    video = await db.get(SourceVideo, clip.video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video sumber tidak ditemukan.")
+
+    platform = (payload.platform or "youtube_shorts").strip().lower()
+    if platform not in ("youtube_shorts", "tiktok", "instagram_reels"):
+        platform = "youtube_shorts"
+
+    # LLM settings (opsional — kosong berarti heuristik)
+    connected_s = await db.get(AppSetting, "llm_connected")
+    is_connected = bool(connected_s and connected_s.setting_value.lower() == "true")
+    llm_base_url = llm_api_key = llm_model = None
+    if is_connected:
+        base_url_s = await db.get(AppSetting, "llm_base_url")
+        api_key_s = await db.get(AppSetting, "llm_api_key")
+        model_s = await db.get(AppSetting, "llm_model")
+        llm_base_url = base_url_s.setting_value if base_url_s else None
+        llm_model = model_s.setting_value if model_s else "gpt-4o-mini"
+        if api_key_s and api_key_s.setting_value:
+            try:
+                llm_api_key = decrypt_setting(api_key_s.setting_value) if api_key_s.is_encrypted else api_key_s.setting_value
+            except Exception:
+                llm_api_key = None
+
+    # Teks transkrip rentang klip
+    transcript_path = resolve_path(f"transcripts/{video.id}.json")
+    clip_text = ""
+    if os.path.exists(transcript_path):
+        try:
+            with open(transcript_path, "r", encoding="utf-8") as f:
+                t_data = json.load(f)
+            parts = []
+            for seg in t_data.get("segments", []):
+                try:
+                    s_start, s_end = float(seg.get("start", 0.0)), float(seg.get("end", 0.0))
+                except (TypeError, ValueError):
+                    continue
+                if s_end >= clip.start_time_seconds and s_start <= clip.end_time_seconds:
+                    parts.append(str(seg.get("text") or "").strip())
+            clip_text = " ".join(p for p in parts if p)
+        except Exception:
+            clip_text = ""
+
+    language = (payload.language or "id").strip() or "id"
+    if platform == "tiktok":
+        seo = await generate_tiktok_seo(
+            clip_title=clip.title, clip_text=clip_text, video_title=video.original_name,
+            language=language, llm_base_url=llm_base_url or "",
+            llm_api_key=llm_api_key, llm_model=llm_model)
+    else:
+        seo = await generate_youtube_seo(
+            clip_title=clip.title, clip_text=clip_text, video_title=video.original_name,
+            video_description=getattr(video, "description", None) or "",
+            video_type=getattr(video, "video_type", None) or "umum",
+            clip_duration=clip.duration_seconds or 30.0, language=language,
+            llm_base_url=llm_base_url or "", llm_api_key=llm_api_key, llm_model=llm_model)
+        if platform == "instagram_reels":
+            from app.services.seo_service import apply_platform_rules
+            seo = apply_platform_rules("instagram_reels", seo)
+
+    clip.seo_titles = seo.get("titles", [])
+    clip.seo_description = seo.get("description", "")
+    clip.seo_tags = seo.get("tags", [])
+    clip.seo_hashtags = seo.get("hashtags", [])
+    await db.commit()
+
+    return SEOGenerateResponse(
+        clip_id=clip.id,
+        titles=seo.get("titles", [])[:3],
+        description=seo.get("description", ""),
+        tags=seo.get("tags", []),
+        hashtags=seo.get("hashtags", []),
+        category_suggestion=str(seo.get("category_suggestion") or "22"),
+        best_upload_time=seo.get("best_upload_time"),
+        estimated_reach=seo.get("estimated_reach"),
+        caption=seo.get("caption"),
     )
 
 

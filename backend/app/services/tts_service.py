@@ -4,12 +4,22 @@ from typing import Dict, Any, List
 from app.utils.subprocess_utils import run_with_timeout
 
 POPULAR_VOICES = [
-    {"id": "id-ID-ArdiNeural", "name": "Ardi (Indonesian - Male)", "lang": "id-ID", "gender": "Male"},
-    {"id": "id-ID-GadisNeural", "name": "Gadis (Indonesian - Female)", "lang": "id-ID", "gender": "Female"},
-    {"id": "en-US-ChristopherNeural", "name": "Christopher (English - Male)", "lang": "en-US", "gender": "Male"},
-    {"id": "en-US-JennyNeural", "name": "Jenny (English - Female)", "lang": "en-US", "gender": "Female"},
-    {"id": "en-US-GuyNeural", "name": "Guy (English - Male)", "lang": "en-US", "gender": "Male"},
-    {"id": "en-US-AriaNeural", "name": "Aria (English - Female)", "lang": "en-US", "gender": "Female"},
+    {"id": "id-ID-ArdiNeural", "name": "Ardi (Indonesia - Pria)", "lang": "id-ID", "gender": "Male", "description": "Berwibawa & Alami"},
+    {"id": "id-ID-GadisNeural", "name": "Gadis (Indonesia - Wanita)", "lang": "id-ID", "gender": "Female", "description": "Jelas, Ramah & Ceria"},
+    {"id": "jv-ID-DimasNeural", "name": "Dimas (Jawa/ID - Pria)", "lang": "jv-ID", "gender": "Male", "description": "Lokal Jawa Hangat"},
+    {"id": "jv-ID-SitiNeural", "name": "Siti (Jawa/ID - Wanita)", "lang": "jv-ID", "gender": "Female", "description": "Lokal Jawa Lembut"},
+    {"id": "su-ID-JajangNeural", "name": "Jajang (Sunda/ID - Pria)", "lang": "su-ID", "gender": "Male", "description": "Lokal Sunda Luwes"},
+    {"id": "su-ID-TutiNeural", "name": "Tuti (Sunda/ID - Wanita)", "lang": "su-ID", "gender": "Female", "description": "Lokal Sunda Manis"},
+    {"id": "ms-MY-OsmanNeural", "name": "Osman (Melayu - Pria)", "lang": "ms-MY", "gender": "Male", "description": "Melayu Berwibawa"},
+    {"id": "ms-MY-YasminNeural", "name": "Yasmin (Melayu - Wanita)", "lang": "ms-MY", "gender": "Female", "description": "Melayu Lembut"},
+    {"id": "en-US-ChristopherNeural", "name": "Christopher (English - Male)", "lang": "en-US", "gender": "Male", "description": "Deep Voice & Narator"},
+    {"id": "en-US-JennyNeural", "name": "Jenny (English - Female)", "lang": "en-US", "gender": "Female", "description": "Warm & Conversational"},
+    {"id": "en-US-GuyNeural", "name": "Guy (English - Male)", "lang": "en-US", "gender": "Male", "description": "Energetic & Casual"},
+    {"id": "en-US-AriaNeural", "name": "Aria (English - Female)", "lang": "en-US", "gender": "Female", "description": "Professional & Confident"},
+    {"id": "en-US-AndrewMultilingualNeural", "name": "Andrew (Multilingual - Male)", "lang": "en-US", "gender": "Male", "description": "Modern & Authentic"},
+    {"id": "en-US-AvaMultilingualNeural", "name": "Ava (Multilingual - Female)", "lang": "en-US", "gender": "Female", "description": "Expressive & Pleasant"},
+    {"id": "en-US-BrianMultilingualNeural", "name": "Brian (Multilingual - Male)", "lang": "en-US", "gender": "Male", "description": "Deep & Approachable"},
+    {"id": "en-US-EmmaMultilingualNeural", "name": "Emma (Multilingual - Female)", "lang": "en-US", "gender": "Female", "description": "Clear & Cheerful"},
 ]
 
 async def generate_speech(

@@ -17,6 +17,7 @@ const TYPE_LABELS: Record<string, string> = {
   LLM_ANALYZE: 'Analisis AI',
   RENDER: 'Render 9:16',
   GDRIVE_UPLOAD: 'Upload Drive',
+  YOUTUBE_UPLOAD: 'Upload YouTube',
 };
 
 const STATUS_STYLE: Record<string, string> = {
@@ -28,7 +29,10 @@ const STATUS_STYLE: Record<string, string> = {
 };
 
 function timeAgo(iso: string): string {
-  const t = new Date(iso).getTime();
+  // Server kirim datetime naive = UTC tanpa penanda zona. Tanpa 'Z'/offset,
+  // browser menebaknya sebagai waktu lokal (selisih jam!) — paksa sebagai UTC.
+  const normalized = /[Zz+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`;
+  const t = new Date(normalized).getTime();
   if (Number.isNaN(t)) return '-';
   const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
   if (s < 60) return `${s} dtk lalu`;

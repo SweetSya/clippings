@@ -56,7 +56,11 @@ export interface RenderedShort {
   render_status: 'PENDING' | 'RENDERING' | 'COMPLETED' | 'FAILED';
   render_progress: number;
   is_drive_uploaded: boolean;
+  is_youtube_uploaded?: boolean;
+  source_url?: string | null;
+  source_title?: string | null;
   download_url: string;
+  thumbnail_url?: string;
   created_at: string;
   gdrive?: {
     upload_status: 'QUEUED' | 'UPLOADING' | 'SUCCESS' | 'FAILED';
@@ -107,6 +111,7 @@ export interface VoiceItem {
   name: string;
   lang: string;
   gender: string;
+  description?: string;
 }
 
 export interface YouTubeInfo {
@@ -123,6 +128,7 @@ export interface GeneralSettingsUpdate {
   min_clip_seconds: number;
   max_clip_seconds: number;
   yt_quality: string;
+  whisper_language?: string;
 }
 
 export interface AITestResponse {
@@ -163,8 +169,15 @@ export interface SystemSettings {
   min_clip_seconds?: number;
   max_clip_seconds?: number;
   yt_quality?: string;
+  whisper_language?: string;
   clip_view_mode?: 'grid' | 'list';
   shorts_view_mode?: 'grid' | 'list';
+}
+
+export interface TranscriptSegment {
+  start: number;
+  end: number;
+  text: string;
 }
 
 export interface HealthStatus {
@@ -202,6 +215,9 @@ export interface TextPreset {
   enable_intro_title?: boolean;
   intro_title_duration?: number;
   intro_title_style?: string;
+  intro_title_tts?: boolean;
+  intro_title_voice?: string;
+  intro_title_pause?: boolean;
   enable_outro_cta?: boolean;
   outro_cta_text?: string;
   outro_cta_duration?: number;
@@ -260,6 +276,9 @@ export interface TextPresetPayload {
   enable_intro_title?: boolean;
   intro_title_duration?: number;
   intro_title_style?: string;
+  intro_title_tts?: boolean;
+  intro_title_voice?: string;
+  intro_title_pause?: boolean;
   enable_outro_cta?: boolean;
   outro_cta_text?: string;
   outro_cta_duration?: number;
@@ -340,5 +359,42 @@ export interface WahaConfig {
   api_key?: string;
   session_name?: string;
   enabled?: boolean;
+}
+
+export interface PipelineRule {
+  id: string;
+  name?: string;
+  context: string;
+  preset_id: string;
+}
+
+export interface PipelineConfig {
+  auto_clip_enabled: boolean;
+  min_score: number;
+  context_rules: PipelineRule[];
+  default_preset_id?: string | null;
+  auto_upload_youtube: boolean;
+  auto_upload_gdrive: boolean;
+  auto_notify_whatsapp: boolean;
+  whatsapp_target_chat?: string | null;
+  whatsapp_paired?: boolean;
+  whatsapp_paired_chat_name?: string | null;
+  youtube_connected?: boolean;
+  gdrive_connected?: boolean;
+}
+
+export interface PipelineMatchTestRequest {
+  title?: string;
+  video_type?: string;
+  description?: string;
+  clip_title?: string;
+}
+
+export interface PipelineMatchTestResponse {
+  matched: boolean;
+  selected_preset_id?: string | null;
+  selected_preset_name?: string | null;
+  matched_rule?: PipelineRule | null;
+  match_reason: string;
 }
 

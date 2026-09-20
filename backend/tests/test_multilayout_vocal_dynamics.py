@@ -237,6 +237,19 @@ def test_ffmpeg_build_video_filtergraph_layouts():
     assert "overlay=" in graph_pip_center
 
 
+def test_pad_expressions_are_quoted():
+    """Regresi: koma di dalam min()/max() pada argumen pad HARUS di-quote,
+    else parser mengira filter baru ("No such filter: 'min(1080-iw'")."""
+    import re
+    for layout in ("split_top_bottom", "split_bottom_top", "streamer_face_top", "streamer_face_bottom"):
+        graph, _ = _build_video_filtergraph(
+            framing_layout=layout, crop_mode="center", crop_offset_x=0,
+            video_filter="none", face_cy_ratio=0.25,
+        )
+        for m in re.finditer(r"pad=1080:\d+:", graph):
+            # setelah 'pad=WxH:' harus langsung quote pembuka
+            assert graph[m.end()] == "'", f"{layout}: pad x/y tak di-quote: {graph[m.start:m.start+60]}"
+
 def test_video_filter_pack_graph():
     from app.services.ffmpeg_service import VIDEO_FILTERS
 

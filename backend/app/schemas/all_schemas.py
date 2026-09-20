@@ -86,6 +86,7 @@ class GeneralSettingsRequest(BaseModel):
     min_clip_seconds: int = Field(10, ge=5, le=180, description="Minimum clip duration in seconds")
     max_clip_seconds: int = Field(60, ge=10, le=300, description="Maximum clip duration in seconds")
     yt_quality: str = Field("1080p", description="Default YouTube quality: '1080p', '720p', or 'best'")
+    whisper_language: str = Field("auto", description="Whisper language: 'auto' or ISO code (id, en, ms, ...)")
 
 class YouTubeCookiesStatusResponse(BaseModel):
     has_cookies: bool
@@ -158,8 +159,15 @@ class SettingsResponse(BaseModel):
     min_clip_seconds: int = 10
     max_clip_seconds: int = 60
     yt_quality: str = "1080p"
+    whisper_language: str = "auto"
     clip_view_mode: str = "grid"
     shorts_view_mode: str = "grid"
+    youtube_auto_upload: bool = False
+    youtube_default_privacy: str = "public"
+    youtube_default_category: str = "22"
+    youtube_default_made_for_kids: bool = False
+    youtube_connected: bool = False
+    youtube_client_id: Optional[str] = None
 
 class GDriveTestResponse(BaseModel):
     ok: bool
@@ -201,6 +209,31 @@ class TranscriptResponse(BaseModel):
     full_text: str
     language: Optional[str] = None
     json_url: str
+
+class TranscriptSegmentItem(BaseModel):
+    start: float = Field(..., ge=0)
+    end: float = Field(..., ge=0)
+    text: str = Field(..., max_length=2000)
+
+    @field_validator("end")
+    @classmethod
+    def validate_end(cls, v, info):
+        start = info.data.get("start") if hasattr(info, "data") else None
+        if start is not None and v <= start:
+            raise ValueError("end harus > start")
+        return v
+
+class TranscriptSegmentsResponse(BaseModel):
+    video_id: str
+    language: Optional[str] = None
+    count: int = 0
+    segments: List[TranscriptSegmentItem] = Field(default_factory=list)
+
+class TranscriptSegmentsUpdate(BaseModel):
+    segments: List[TranscriptSegmentItem] = Field(..., min_length=1, max_length=5000)
+
+class RetranscribeRequest(BaseModel):
+    language: Optional[str] = Field(None, max_length=10, description="'auto' atau kode bahasa; kosong = pakai setting global")
 
 class YouTubeInfoRequest(BaseModel):
     url: str
@@ -250,6 +283,10 @@ class ClipCandidateResponse(BaseModel):
     narration_text: Optional[str] = None
     narration_voice: Optional[str] = None
     narration_audio_path: Optional[str] = None
+    seo_titles: Optional[List[str]] = None
+    seo_description: Optional[str] = None
+    seo_tags: Optional[List[str]] = None
+    seo_hashtags: Optional[List[str]] = None
     created_at: str
 
 class ClipUpdateRequest(BaseModel):
@@ -312,8 +349,11 @@ class ClipRenderRequest(BaseModel):
     audio_mode: str = Field("mix", description="'mix' (duck original for voiceover/bgm), 'replace' (replace original audio), 'original'")
     video_filter: Optional[str] = Field("none", description="'none', 'cinematic', 'vivid', 'warm', 'cool', 'drama', or 'vintage'")
     enable_intro_title: Optional[bool] = Field(False, description="Tampilkan judul klip di awal")
-    intro_title_duration: Optional[float] = Field(1.5, ge=0.5, le=5.0)
+    intro_title_duration: Optional[float] = Field(2.0, ge=0.5, le=5.0)
     intro_title_style: Optional[str] = Field("fade_slide", description="'fade_slide', 'pop', or 'typewriter'")
+    intro_title_tts: Optional[bool] = Field(True, description="Bacakan judul singkat dengan audio AI")
+    intro_title_voice: Optional[str] = Field("id-ID-ArdiNeural", description="Voice ID untuk audio AI intro")
+    intro_title_pause: Optional[bool] = Field(False, description="Freeze frame jeda sejenak saat opening intro")
     enable_outro_cta: Optional[bool] = Field(False, description="Tampilkan CTA di akhir")
     outro_cta_text: Optional[str] = Field("Follow untuk lebih banyak!", max_length=255)
     outro_cta_duration: Optional[float] = Field(2.0, ge=0.5, le=10.0)
@@ -370,7 +410,11 @@ class RenderedShortItem(BaseModel):
     render_status: str
     render_progress: int
     is_drive_uploaded: bool
+    is_youtube_uploaded: bool = False
+    source_url: Optional[str] = None
+    source_title: Optional[str] = None
     download_url: str
+    thumbnail_url: Optional[str] = None
     created_at: str
     gdrive: Optional[Dict[str, Any]] = None
 
@@ -384,6 +428,70 @@ class GDriveUploadStatusResponse(BaseModel):
     upload_progress: int
     gdrive_file_id: Optional[str] = None
     gdrive_web_view_link: Optional[str] = None
+    error_message: Optional[str] = None
+
+# ----------------- YouTube Upload Schemas (Phase 5 — 8.1) -----------------
+class YouTubeSettingsRequest(BaseModel):
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+    auto_upload: Optional[bool] = None
+    default_privacy: Optional[str] = "public"
+    default_category: Optional[str] = "22"
+    made_for_kids: Optional[bool] = False
+
+class YouTubeConfigResponse(BaseModel):
+    client_id: Optional[str] = None
+    auto_upload: bool = False
+    default_privacy: str = "public"
+    default_category: str = "22"
+    made_for_kids: bool = False
+    connected: bool = False
+    channel_name: Optional[str] = None
+    channel_id: Optional[str] = None
+
+class YouTubeOAuthUrlResponse(BaseModel):
+    auth_url: str
+    redirect_uri: str
+
+class YouTubeOAuthExchangeRequest(BaseModel):
+    code: str
+    redirect_uri: Optional[str] = None
+
+class YouTubeChannelInfo(BaseModel):
+    ok: bool
+    channel_name: Optional[str] = None
+    channel_id: Optional[str] = None
+    subscriber_count: Optional[str] = None
+    error: Optional[str] = None
+
+class YouTubeUploadRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = Field("", max_length=5000)
+    tags: Optional[List[str]] = Field(default_factory=list, max_length=15)
+    hashtags: Optional[List[str]] = Field(default_factory=list, max_length=10)
+    privacy_status: str = Field("public", description="'public', 'unlisted', or 'private'")
+    category_id: str = Field("22", max_length=5)
+    custom_thumbnail_path: Optional[str] = None
+    made_for_kids: Optional[bool] = Field(False, description="Apakah konten khusus anak-anak? False = untuk semua kalangan umur")
+
+    @field_validator("privacy_status")
+    @classmethod
+    def validate_privacy(cls, v: str) -> str:
+        norm = str(v or "public").strip().lower()
+        if norm not in ("public", "unlisted", "private"):
+            raise ValueError("privacy_status harus public, unlisted, atau private")
+        return norm
+
+class YouTubeExportResponse(BaseModel):
+    export_id: str
+    status: str
+
+class YouTubeUploadStatusResponse(BaseModel):
+    export_id: str
+    upload_status: str
+    upload_progress: int
+    youtube_video_id: Optional[str] = None
+    youtube_url: Optional[str] = None
     error_message: Optional[str] = None
 
 # ----------------- TTS Schemas -----------------
@@ -446,8 +554,11 @@ class TextPresetResponse(BaseModel):
     narration_voice: str = "id-ID-ArdiNeural"
     narration_style: str = "hook_story"
     enable_intro_title: bool = False
-    intro_title_duration: float = 1.5
+    intro_title_duration: float = 2.0
     intro_title_style: str = "fade_slide"
+    intro_title_tts: bool = True
+    intro_title_voice: str = "id-ID-ArdiNeural"
+    intro_title_pause: bool = False
     enable_outro_cta: bool = False
     outro_cta_text: str = "Follow untuk lebih banyak!"
     outro_cta_duration: float = 2.0
@@ -506,8 +617,11 @@ class TextPresetCreate(BaseModel):
     narration_voice: str = Field("id-ID-ArdiNeural", max_length=100)
     narration_style: str = Field("hook_story", max_length=50)
     enable_intro_title: bool = False
-    intro_title_duration: float = Field(1.5, ge=0.5, le=5.0)
+    intro_title_duration: float = Field(2.0, ge=0.5, le=5.0)
     intro_title_style: str = Field("fade_slide", max_length=20)
+    intro_title_tts: bool = True
+    intro_title_voice: str = Field("id-ID-ArdiNeural", max_length=50)
+    intro_title_pause: bool = False
     enable_outro_cta: bool = False
     outro_cta_text: str = Field("Follow untuk lebih banyak!", max_length=255)
     outro_cta_duration: float = Field(2.0, ge=0.5, le=10.0)
@@ -566,6 +680,9 @@ class TextPresetUpdate(BaseModel):
     enable_intro_title: Optional[bool] = None
     intro_title_duration: Optional[float] = Field(None, ge=0.5, le=5.0)
     intro_title_style: Optional[str] = None
+    intro_title_tts: Optional[bool] = None
+    intro_title_voice: Optional[str] = Field(None, max_length=50)
+    intro_title_pause: Optional[bool] = None
     enable_outro_cta: Optional[bool] = None
     outro_cta_text: Optional[str] = None
     outro_cta_duration: Optional[float] = Field(None, ge=0.5, le=10.0)
@@ -608,6 +725,21 @@ class YouTubeAudioDownloadRequest(BaseModel):
 class GenerateNarrationRequest(BaseModel):
     target_duration_seconds: Optional[float] = None
     style: Optional[str] = Field("hook_story", description="'hook_story', 'summary', or 'educational'")
+
+class SEOGenerateRequest(BaseModel):
+    platform: str = Field("youtube_shorts", description="'youtube_shorts', 'tiktok', or 'instagram_reels'")
+    language: str = Field("id", max_length=10)
+
+class SEOGenerateResponse(BaseModel):
+    clip_id: str
+    titles: List[str]
+    description: str = ""
+    tags: List[str] = Field(default_factory=list)
+    hashtags: List[str] = Field(default_factory=list)
+    category_suggestion: str = "22"
+    best_upload_time: Optional[str] = None
+    estimated_reach: Optional[str] = None
+    caption: Optional[str] = None
 
 class GenerateNarrationResponse(BaseModel):
     clip_id: str

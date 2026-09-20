@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     WHISPER_MODEL: str = "base"
     WHISPER_DEVICE: str = "cpu"
     WHISPER_COMPUTE_TYPE: str = "int8"
+    # Batas waktu transkripsi = max(min, estimasi_durasi * faktor).
+    # Mencegah job macet selamanya (thread macet = semaphore transcribe tertahan).
+    WHISPER_TIMEOUT_FACTOR: float = 6.0
+    WHISPER_TIMEOUT_MIN_SECONDS: float = 1800.0
 
     # API
     VITE_API_BASE_URL: str = "/api"

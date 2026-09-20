@@ -418,7 +418,7 @@ def _build_video_filtergraph(
 
         pad_x = f"max(0,min(1080-iw,(1080-iw)/2+({screen_offset_x})))"
         pad_y = f"max(0,min(960-ih,(960-ih)/2+({screen_offset_y})))"
-        s_chain = f"{s_scale},pad=1080:960:{pad_x}:{pad_y}:black"
+        s_chain = f"{s_scale},pad=1080:960:'{pad_x}':'{pad_y}':black"
 
         graph_parts = [
             "[0:v]split=2[v_p_raw][v_s_raw]",
@@ -492,7 +492,7 @@ def _build_video_filtergraph(
         c_crop = f"crop=w=ih*(1080/1152):h=ih*0.6:x='(iw-ow)/2':y='ih*{c_y_frac}'"
         pad_x = f"max(0,min(1080-iw,(1080-iw)/2+({screen_offset_x})))"
         pad_y = f"max(0,min(1152-ih,(1152-ih)/2+({screen_offset_y})))"
-        s_chain = f"{c_crop},scale=1080:1152:force_original_aspect_ratio=increase,crop=1080:1152,pad=1080:1152:{pad_x}:{pad_y}:black"
+        s_chain = f"{c_crop},scale=1080:1152:force_original_aspect_ratio=increase,crop=1080:1152,pad=1080:1152:'{pad_x}':'{pad_y}':black"
 
         graph_parts = [
             "[0:v]split=2[v_f_raw][v_c_raw]",
@@ -554,10 +554,14 @@ async def render_vertical_clip(
     overlay_config: Optional[dict] = None,
     sfx_triggers: Optional[list] = None,
     face_cy_ratio: Optional[float] = None,
+    intro_audio_path: Optional[str] = None,
+    intro_title_duration: float = 2.0,
+    intro_title_pause: bool = False,
 ) -> bool:
     """
     Render 9:16 vertical short (1080x1920) with burn-in ASS subtitle and progress tracking.
     Supports audio mixing: original audio ducking, background music (BGM), and AI voiceover.
+    Supports intro hook title audio with AI voice and automatic ducking / freeze pause.
     Supports multi-layer framing: single, PIP overlay (full/center), split_top_bottom, split_bottom_top, fit_16_9_center.
     Supports color grading via video_filter (VIDEO_FILTERS); 'none'/invalid = tanpa grading.
     Supports motion graphics overlay via overlay_config (intro/outro/lower-third/stiker);
@@ -565,9 +569,11 @@ async def render_vertical_clip(
     """
     duration = max(1.0, end_time - start_time)
     subtitle_filter = await _resolve_subtitle_filter(ass_path)
-    timeout = max(300.0, duration * 10.0)
+    render_duration = (duration + intro_title_duration) if intro_title_pause else duration
+    timeout = max(300.0, render_duration * 10.0)
 
     has_voice = bool(voiceover_audio_path and os.path.exists(voiceover_audio_path))
+    has_intro_voice = bool(intro_audio_path and os.path.exists(intro_audio_path))
     has_bgm = bool(bgm_audio_path and os.path.exists(bgm_audio_path))
 
     if audio_mode == "original":
@@ -618,7 +624,7 @@ async def render_vertical_clip(
             face_cy_ratio=face_cy_ratio,
         )
 
-        if not is_complex and not include_voice and not include_bgm and not has_sticker:
+        if not is_complex and not include_voice and not include_bgm and not has_sticker and not has_intro_voice and not intro_title_pause:
             # Standard single video pass without complex audio
             vf = v_graph + ("," + ",".join(draw_stages) if draw_stages else "")
             cmd = [
@@ -636,11 +642,12 @@ async def render_vertical_clip(
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac",
                 "-b:a", "128k",
+                "-max_muxing_queue_size", "2048",
                 "-movflags", "+faststart",
                 output_path
             ]
         else:
-            # Multi-audio input & mixing pass, multi-layer filtergraph pass, atau sticker overlay
+            # Multi-audio input & mixing pass, multi-layer filtergraph pass, sticker overlay, atau intro AI hook
             extra_inputs = []
             audio_chains = []
             audio_inputs = []
@@ -653,20 +660,38 @@ async def render_vertical_clip(
 
             include_orig = (audio_mode != "replace")
             if include_orig:
-                orig_vol = 0.15 if has_voice else 1.0
-                audio_chains.append(f"[0:a]volume={orig_vol}[a_orig]")
+                orig_filters = ["asetpts=PTS-STARTPTS", "aformat=sample_rates=44100:channel_layouts=stereo"]
+                if intro_title_pause:
+                    delay_ms = int(intro_title_duration * 1000)
+                    orig_filters.append(f"adelay=delays={delay_ms}:all=1")
+                elif has_voice:
+                    orig_vol = 0.15
+                    orig_filters.append(f"volume={orig_vol}")
+                elif has_intro_voice:
+                    # Ducking audio video asli hanya selama judul dibaca suara AI pembuka
+                    orig_filters.append(f"volume=eval=frame:volume='if(lt(t,{intro_title_duration:.2f}),0.12,1.0)'")
+                else:
+                    orig_filters.append("volume=1.0")
+                audio_chains.append(f"[0:a]{','.join(orig_filters)}[a_orig]")
                 audio_inputs.append("[a_orig]")
+
+            if has_intro_voice:
+                # Suara AI membaca judul intro di pembuka klip (disinkronkan ke 44.1kHz stereo)
+                extra_inputs.extend(["-i", intro_audio_path])
+                audio_chains.append(f"[{curr_input_idx}:a]asetpts=PTS-STARTPTS,aformat=sample_rates=44100:channel_layouts=stereo,volume=1.0[a_intro]")
+                audio_inputs.append("[a_intro]")
+                curr_input_idx += 1
 
             if has_bgm:
                 extra_inputs.extend(["-stream_loop", "-1", "-i", bgm_audio_path])
                 bgm_vol = max(0.01, min(1.0, bgm_volume))
-                audio_chains.append(f"[{curr_input_idx}:a]volume={bgm_vol}[a_bgm]")
+                audio_chains.append(f"[{curr_input_idx}:a]asetpts=PTS-STARTPTS,aformat=sample_rates=44100:channel_layouts=stereo,volume={bgm_vol}[a_bgm]")
                 audio_inputs.append("[a_bgm]")
                 curr_input_idx += 1
 
             if has_voice:
                 extra_inputs.extend(["-i", voiceover_audio_path])
-                audio_chains.append(f"[{curr_input_idx}:a]volume=1.0[a_voice]")
+                audio_chains.append(f"[{curr_input_idx}:a]asetpts=PTS-STARTPTS,aformat=sample_rates=44100:channel_layouts=stereo,volume=1.0[a_voice]")
                 audio_inputs.append("[a_voice]")
                 curr_input_idx += 1
 
@@ -682,17 +707,29 @@ async def render_vertical_clip(
 
             if len(audio_inputs) > 1:
                 mix_in = "".join(audio_inputs)
-                audio_chains.append(f"{mix_in}amix=inputs={len(audio_inputs)}:duration=first:dropout_transition=2[aout]")
+                audio_chains.append(
+                    f"{mix_in}amix=inputs={len(audio_inputs)}:duration=first:dropout_transition=2,"
+                    f"aresample=async=1:first_pts=0,aformat=sample_rates=44100:channel_layouts=stereo[aout]"
+                )
                 final_a = "[aout]"
             elif len(audio_inputs) == 1:
                 final_a = audio_inputs[0]
             else:
                 final_a = "0:a"
 
+            # Sisipkan tpad (freeze frame jeda pembuka) bila diaktifkan + darken background jika freeze
+            if intro_title_pause:
+                pad_filter = (
+                    f",tpad=start_duration={intro_title_duration:.2f}:start_mode=clone,"
+                    f"drawbox=t=fill:color=black@0.45:enable='between(t,0,{intro_title_duration:.2f})'"
+                )
+            else:
+                pad_filter = ""
+
             if is_complex:
                 # Kupas [vout] bawaan agar stage overlay bisa ditempel setelahnya.
                 v_head, _, _ = v_graph.rpartition("[vout]")
-                v_parts = [v_head + "[v_base]"]
+                v_parts = [v_head + pad_filter + "[v_base]"]
                 cur_label = _stage_drawtext_chain(v_parts, "[v_base]", draw_stages)
                 if has_sticker:
                     stk_scale, stk_overlay = build_sticker_stage(
@@ -709,11 +746,10 @@ async def render_vertical_clip(
                 else:
                     full_filter_complex = v_graph_staged
             else:
-                v_chain = f"[0:v]{v_graph}[v_base]"
+                v_chain = f"[0:v]{v_graph}{pad_filter}[v_base]"
                 v_parts = [v_chain]
                 cur_label = _stage_drawtext_chain(v_parts, "[v_base]", draw_stages)
                 if has_sticker:
-                    # Cabang ini hanya tercapai bila has_sticker (tanpa audio & single layout).
                     stk_scale, stk_overlay = build_sticker_stage(
                         str(overlay_cfg.get("sticker_position") or "top_right"),
                         overlay_cfg.get("sticker_scale", 0.15),
@@ -738,7 +774,7 @@ async def render_vertical_clip(
                 "-filter_complex", full_filter_complex,
                 "-map", "[vout]",
                 "-map", final_a,
-                "-t", str(duration),
+                "-t", str(render_duration),
                 "-c:v", "libx264",
                 "-preset", "fast",
                 "-crf", "22",
@@ -746,6 +782,7 @@ async def render_vertical_clip(
                 "-pix_fmt", "yuv420p",
                 "-c:a", "aac",
                 "-b:a", "128k",
+                "-max_muxing_queue_size", "2048",
                 "-movflags", "+faststart",
                 output_path
             ]

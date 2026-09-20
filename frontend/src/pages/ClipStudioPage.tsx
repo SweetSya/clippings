@@ -36,6 +36,7 @@ import {
   Save,
   Wand2,
   AudioLines,
+  Captions,
   Bookmark,
   RefreshCw,
   Plus,
@@ -57,6 +58,7 @@ import {
   FramingLayout,
   ScreenMode,
   PersonShape,
+  TranscriptSegment,
 } from '../types';
 
 const FONT_OPTIONS = [
@@ -77,6 +79,25 @@ const FONT_OPTIONS = [
   { value: 'Caveat', label: 'Caveat (Casual Script)' },
   { value: 'Impact', label: 'Impact (Klasik Meme)' },
   { value: 'Arial', label: 'Arial (Standar Universal)' },
+];
+
+export const FALLBACK_VOICES: VoiceItem[] = [
+  { id: 'id-ID-ArdiNeural', name: 'Ardi (Indonesia - Pria)', lang: 'id-ID', gender: 'Male', description: 'Berwibawa & Alami' },
+  { id: 'id-ID-GadisNeural', name: 'Gadis (Indonesia - Wanita)', lang: 'id-ID', gender: 'Female', description: 'Jelas, Ramah & Ceria' },
+  { id: 'jv-ID-DimasNeural', name: 'Dimas (Jawa/ID - Pria)', lang: 'jv-ID', gender: 'Male', description: 'Lokal Jawa Hangat' },
+  { id: 'jv-ID-SitiNeural', name: 'Siti (Jawa/ID - Wanita)', lang: 'jv-ID', gender: 'Female', description: 'Lokal Jawa Lembut' },
+  { id: 'su-ID-JajangNeural', name: 'Jajang (Sunda/ID - Pria)', lang: 'su-ID', gender: 'Male', description: 'Lokal Sunda Luwes' },
+  { id: 'su-ID-TutiNeural', name: 'Tuti (Sunda/ID - Wanita)', lang: 'su-ID', gender: 'Female', description: 'Lokal Sunda Manis' },
+  { id: 'ms-MY-OsmanNeural', name: 'Osman (Melayu - Pria)', lang: 'ms-MY', gender: 'Male', description: 'Melayu Berwibawa' },
+  { id: 'ms-MY-YasminNeural', name: 'Yasmin (Melayu - Wanita)', lang: 'ms-MY', gender: 'Female', description: 'Melayu Lembut' },
+  { id: 'en-US-ChristopherNeural', name: 'Christopher (English - Male)', lang: 'en-US', gender: 'Male', description: 'Deep Voice & Narator' },
+  { id: 'en-US-JennyNeural', name: 'Jenny (English - Female)', lang: 'en-US', gender: 'Female', description: 'Warm & Conversational' },
+  { id: 'en-US-GuyNeural', name: 'Guy (English - Male)', lang: 'en-US', gender: 'Male', description: 'Energetic & Casual' },
+  { id: 'en-US-AriaNeural', name: 'Aria (English - Female)', lang: 'en-US', gender: 'Female', description: 'Professional & Confident' },
+  { id: 'en-US-AndrewMultilingualNeural', name: 'Andrew (Multilingual - Male)', lang: 'en-US', gender: 'Male', description: 'Modern & Authentic' },
+  { id: 'en-US-AvaMultilingualNeural', name: 'Ava (Multilingual - Female)', lang: 'en-US', gender: 'Female', description: 'Expressive & Pleasant' },
+  { id: 'en-US-BrianMultilingualNeural', name: 'Brian (Multilingual - Male)', lang: 'en-US', gender: 'Male', description: 'Deep & Approachable' },
+  { id: 'en-US-EmmaMultilingualNeural', name: 'Emma (Multilingual - Female)', lang: 'en-US', gender: 'Female', description: 'Clear & Cheerful' },
 ];
 
 interface ClipStudioPageProps {
@@ -181,6 +202,10 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
   const [screenAspect, setScreenAspect] = useState<'16:9' | '9:16'>('16:9');
   const [videoFilter, setVideoFilter] = useState('none');
   const [ovIntro, setOvIntro] = useState(false);
+  const [ovIntroTts, setOvIntroTts] = useState(true);
+  const [ovIntroDuration, setOvIntroDuration] = useState(2.0);
+  const [ovIntroVoice, setOvIntroVoice] = useState('id-ID-ArdiNeural');
+  const [ovIntroPause, setOvIntroPause] = useState(false);
   const [ovOutro, setOvOutro] = useState(false);
   const [ovOutroText, setOvOutroText] = useState('Follow untuk lebih banyak!');
   const [ovLower, setOvLower] = useState(false);
@@ -205,7 +230,17 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
   const [enableVocalDynamics, setEnableVocalDynamics] = useState(false);
 
   // Control panel tab & Preset mode
-  const [controlTab, setControlTab] = useState<'visual' | 'audio'>('visual');
+  const [controlTab, setControlTab] = useState<'visual' | 'audio' | 'subtitle'>('visual');
+
+  // Subtitle / transcript editor
+  const [segments, setSegments] = useState<TranscriptSegment[]>([]);
+  const [segmentsOrig, setSegmentsOrig] = useState<TranscriptSegment[]>([]);
+  const [segmentsLang, setSegmentsLang] = useState<string | null>(null);
+  const [loadingSegments, setLoadingSegments] = useState(false);
+  const [savingSegments, setSavingSegments] = useState(false);
+  const [segmentSearch, setSegmentSearch] = useState('');
+  const [retransLang, setRetransLang] = useState('auto');
+  const [retranscribing, setRetranscribing] = useState(false);
   const [presetMode, setPresetMode] = useState<'preset' | 'custom'>('preset');
 
   // Presets
@@ -242,10 +277,113 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
   const [useVoiceover, setUseVoiceover] = useState(false);
   const [generatingNarration, setGeneratingNarration] = useState(false);
   const [synthesizing, setSynthesizing] = useState(false);
+  const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
+  const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const handleToggleVoicePreview = (voiceId: string) => {
+    if (playingVoiceId === voiceId) {
+      if (voiceAudioRef.current) {
+        voiceAudioRef.current.pause();
+        voiceAudioRef.current = null;
+      }
+      setPlayingVoiceId(null);
+      return;
+    }
+
+    if (voiceAudioRef.current) {
+      voiceAudioRef.current.pause();
+    }
+
+    const audioUrl = ttsApi.getVoiceSampleUrl(voiceId);
+    const audio = new Audio(audioUrl);
+    voiceAudioRef.current = audio;
+    setPlayingVoiceId(voiceId);
+
+    audio.onended = () => {
+      setPlayingVoiceId(null);
+      voiceAudioRef.current = null;
+    };
+    audio.onerror = () => {
+      setPlayingVoiceId(null);
+      voiceAudioRef.current = null;
+    };
+    audio.play().catch((err) => {
+      console.error('Gagal memutar sampel suara', err);
+      setPlayingVoiceId(null);
+    });
+  };
+
+  useEffect(() => {
+    return () => {
+      if (voiceAudioRef.current) {
+        voiceAudioRef.current.pause();
+        voiceAudioRef.current = null;
+      }
+    };
+  }, []);
 
   const showNotification = (type: 'success' | 'error', message: string) => {
     setNotification({ type, message });
     setTimeout(() => setNotification(null), 4000);
+  };
+
+  // ---- Subtitle / transcript editor ----
+  const segmentsDirty = JSON.stringify(segments) !== JSON.stringify(segmentsOrig);
+
+  const loadSegments = async (silent = false) => {
+    if (!activeVideoId) return;
+    if (!silent) setLoadingSegments(true);
+    try {
+      const res = await videosApi.getTranscriptSegments(activeVideoId);
+      setSegments(res.segments);
+      setSegmentsOrig(res.segments);
+      setSegmentsLang(res.language || null);
+    } catch (e: any) {
+      if (!silent) showNotification('error', e.response?.data?.detail || 'Transkrip belum tersedia.');
+      setSegments([]);
+      setSegmentsOrig([]);
+      setSegmentsLang(null);
+    } finally {
+      if (!silent) setLoadingSegments(false);
+    }
+  };
+
+  const handleSaveSegments = async () => {
+    if (!activeVideoId) return;
+    const cleaned = segments.map((s) => ({ ...s, text: s.text.trim() })).filter((s) => s.text);
+    if (cleaned.length === 0) {
+      showNotification('error', 'Transkrip tak boleh kosong semua.');
+      return;
+    }
+    setSavingSegments(true);
+    try {
+      const res = await videosApi.updateTranscriptSegments(activeVideoId, cleaned);
+      setSegments(res.segments);
+      setSegmentsOrig(res.segments);
+      showNotification('success', `${res.count} segmen tersimpan. Render & analisis berikutnya memakai teks baru.`);
+    } catch (e: any) {
+      showNotification('error', e.response?.data?.detail || 'Gagal menyimpan transkrip.');
+    } finally {
+      setSavingSegments(false);
+    }
+  };
+
+  const handleRetranscribe = async () => {
+    if (!activeVideoId || retranscribing) return;
+    if (segmentsDirty && !window.confirm('Ada perubahan belum disimpan. Lanjutkan re-transcribe (perubahan hilang)?')) return;
+    setRetranscribing(true);
+    try {
+      const res = await videosApi.retranscribe(activeVideoId, retransLang === 'auto' ? undefined : retransLang);
+      showNotification('success', `Transkripsi ulang dimulai (bahasa: ${res.language}). Halaman akan terupdate otomatis.`);
+      setSelectedClip(null);
+      setClips([]);
+      const st = await videosApi.getStatus(activeVideoId);
+      setVideoStatus(st);
+    } catch (e: any) {
+      showNotification('error', e.response?.data?.detail || 'Gagal memulai re-transcribe.');
+    } finally {
+      setRetranscribing(false);
+    }
   };
 
   // Load videos and settings on mount
@@ -294,6 +432,12 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
     if (preset.screen_aspect) setScreenAspect(preset.screen_aspect as any);
     if ((preset as any).video_filter) setVideoFilter((preset as any).video_filter);
     setOvIntro(Boolean((preset as any).enable_intro_title));
+    setOvIntroTts((preset as any).intro_title_tts !== undefined ? Boolean((preset as any).intro_title_tts) : true);
+    if ((preset as any).intro_title_duration !== undefined && (preset as any).intro_title_duration !== null) {
+      setOvIntroDuration((preset as any).intro_title_duration);
+    }
+    if ((preset as any).intro_title_voice) setOvIntroVoice((preset as any).intro_title_voice);
+    setOvIntroPause(Boolean((preset as any).intro_title_pause));
     setOvOutro(Boolean((preset as any).enable_outro_cta));
     if ((preset as any).outro_cta_text) setOvOutroText((preset as any).outro_cta_text);
     setOvLower(Boolean((preset as any).enable_lower_third));
@@ -355,6 +499,10 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
     screen_aspect: screenAspect,
     video_filter: videoFilter,
     enable_intro_title: ovIntro,
+    intro_title_duration: ovIntroDuration,
+    intro_title_tts: ovIntroTts,
+    intro_title_voice: ovIntroVoice,
+    intro_title_pause: ovIntroPause,
     enable_outro_cta: ovOutro,
     outro_cta_text: ovOutroText,
     enable_lower_third: ovLower,
@@ -573,6 +721,9 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
       setSelectedClip(null);
       setClips([]);
       setVideoStatus(null);
+      setSegments([]);
+      setSegmentsOrig([]);
+      setSegmentsLang(null);
       return;
     }
 
@@ -580,6 +731,9 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
     if (found) setActiveVideo(found);
 
     setSelectedClip(null);
+    setSegments([]);
+    setSegmentsOrig([]);
+    setSegmentsLang(null);
     setLoading(true);
 
     let isSubscribed = true;
@@ -809,6 +963,10 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
         screen_aspect: screenAspect,
         video_filter: videoFilter,
         enable_intro_title: ovIntro,
+        intro_title_duration: ovIntroDuration,
+        intro_title_tts: ovIntroTts,
+        intro_title_voice: ovIntroVoice,
+        intro_title_pause: ovIntroPause,
         enable_outro_cta: ovOutro,
         outro_cta_text: ovOutroText,
         enable_lower_third: ovLower,
@@ -900,6 +1058,10 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
         screen_aspect: screenAspect,
         video_filter: videoFilter,
         enable_intro_title: ovIntro,
+        intro_title_duration: ovIntroDuration,
+        intro_title_tts: ovIntroTts,
+        intro_title_voice: ovIntroVoice,
+        intro_title_pause: ovIntroPause,
         enable_outro_cta: ovOutro,
         outro_cta_text: ovOutroText,
         enable_lower_third: ovLower,
@@ -1922,6 +2084,7 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                             enableVocalDynamics={enableVocalDynamics}
                             videoFilter={videoFilter}
                             overlayIntro={ovIntro ? clipTitle : null}
+                            overlayIntroPause={ovIntroPause}
                             overlayOutro={ovOutro ? ovOutroText : null}
                             overlayLowerThird={ovLower ? ovLowerText || 'Nama' : null}
                             videoSrc={activeVideoId ? videosApi.getStreamUrl(activeVideoId) : undefined}
@@ -2216,7 +2379,7 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                             </div>
 
                             {/* Control Panel Tabs */}
-                            <div className="grid grid-cols-2 gap-2 p-1 bg-[#F5F5F4] rounded-xl">
+                            <div className="grid grid-cols-3 gap-2 p-1 bg-[#F5F5F4] rounded-xl">
                           <button
                             type="button"
                             onClick={() => setControlTab('visual')}
@@ -2240,6 +2403,22 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                           >
                             <AudioLines className="w-3.5 h-3.5" />
                             <span>Audio</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setControlTab('subtitle');
+                              if (segments.length === 0) loadSegments();
+                            }}
+                            className={`py-2 text-xs font-semibold rounded-lg transition-all flex items-center justify-center space-x-1.5 ${
+                              controlTab === 'subtitle'
+                                ? 'bg-white text-[#C2410C] shadow-sm'
+                                : 'text-[#78716C] hover:text-[#1C1917]'
+                            }`}
+                          >
+                            <Captions className="w-3.5 h-3.5" />
+                            <span>Subtitle</span>
+                            {segmentsDirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-500" title="Ada perubahan belum disimpan" />}
                           </button>
                         </div>
 
@@ -2944,10 +3123,171 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                             ✨ Overlay & Animasi
                           </label>
                           <div className="space-y-2">
-                            <label className="flex items-center justify-between p-2.5 bg-[#F5F5F4] rounded-xl cursor-pointer">
-                              <span className="text-xs font-semibold text-[#1C1917]">Judul Intro</span>
-                              <input type="checkbox" checked={ovIntro} onChange={(e) => setOvIntro(e.target.checked)} className="w-4 h-4 accent-[#C2410C] cursor-pointer" />
-                            </label>
+                            <div className="bg-[#F5F5F4] rounded-xl p-2.5 space-y-2 border border-transparent focus-within:border-[#C2410C]/30 transition-all">
+                              <label className="flex items-center justify-between cursor-pointer">
+                                <div className="flex flex-col pr-2">
+                                  <span className="text-xs font-semibold text-[#1C1917] flex items-center space-x-1">
+                                    <span>🎬</span>
+                                    <span>Judul Intro (Opening Hook)</span>
+                                  </span>
+                                  <span className="text-[10px] text-[#78716C]">Tampilkan banner judul & bacakan dengan Audio AI</span>
+                                </div>
+                                <input type="checkbox" checked={ovIntro} onChange={(e) => setOvIntro(e.target.checked)} className="w-4 h-4 accent-[#C2410C] cursor-pointer shrink-0" />
+                              </label>
+
+                              {ovIntro && (
+                                <div className="pt-2 border-t border-[#E7E5E4] space-y-2.5 text-xs">
+                                  {/* AI Voice Toggle */}
+                                  <label className="flex items-center justify-between cursor-pointer">
+                                    <span className="text-[#44403C] font-medium flex items-center space-x-1">
+                                      <span>🔊</span>
+                                      <span>Baca Judul dengan Suara AI</span>
+                                    </span>
+                                    <input
+                                      type="checkbox"
+                                      checked={ovIntroTts}
+                                      onChange={(e) => setOvIntroTts(e.target.checked)}
+                                      className="w-4 h-4 accent-[#C2410C] cursor-pointer"
+                                    />
+                                  </label>
+
+                                  {ovIntroTts && (
+                                    <div className="space-y-1.5 bg-white/80 p-2.5 rounded-xl border border-[#E7E5E4] shadow-xs">
+                                      <div className="flex items-center justify-between">
+                                        <label className="text-[10px] font-bold text-[#78716C] uppercase tracking-wide flex items-center space-x-1">
+                                          <span>🎙️ Karakter Suara AI Pembuka</span>
+                                        </label>
+                                        {(() => {
+                                          const list = voices.length > 0 ? voices : FALLBACK_VOICES;
+                                          const cur = list.find((v) => v.id === ovIntroVoice);
+                                          return cur ? (
+                                            <span className="text-[9px] font-medium text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                                              {cur.gender === 'Female' ? 'Wanita' : 'Pria'} • {cur.lang}
+                                            </span>
+                                          ) : null;
+                                        })()}
+                                      </div>
+
+                                      <div className="flex items-center gap-2">
+                                        <select
+                                          value={ovIntroVoice}
+                                          onChange={(e) => setOvIntroVoice(e.target.value)}
+                                          className="flex-1 px-2.5 py-1.5 bg-white border border-[#D6D3D1] rounded-lg text-xs font-semibold text-[#1C1917] outline-none focus:border-[#C2410C]"
+                                        >
+                                          <optgroup label="🇮🇩 Bahasa Indonesia & Daerah">
+                                            {(voices.length > 0 ? voices : FALLBACK_VOICES)
+                                              .filter((v) => v.lang.endsWith('-ID'))
+                                              .map((v) => (
+                                                <option key={v.id} value={v.id}>
+                                                  {v.name} {v.description ? `— ${v.description}` : ''}
+                                                </option>
+                                              ))}
+                                          </optgroup>
+                                          <optgroup label="🇲🇾 Melayu">
+                                            {(voices.length > 0 ? voices : FALLBACK_VOICES)
+                                              .filter((v) => v.lang.startsWith('ms'))
+                                              .map((v) => (
+                                                <option key={v.id} value={v.id}>
+                                                  {v.name} {v.description ? `— ${v.description}` : ''}
+                                                </option>
+                                              ))}
+                                          </optgroup>
+                                          <optgroup label="🇺🇸 English / Multilingual">
+                                            {(voices.length > 0 ? voices : FALLBACK_VOICES)
+                                              .filter((v) => v.lang.startsWith('en'))
+                                              .map((v) => (
+                                                <option key={v.id} value={v.id}>
+                                                  {v.name} {v.description ? `— ${v.description}` : ''}
+                                                </option>
+                                              ))}
+                                          </optgroup>
+                                        </select>
+
+                                        <button
+                                          type="button"
+                                          onClick={() => handleToggleVoicePreview(ovIntroVoice)}
+                                          title="Dengarkan sampel suara ini"
+                                          className={`flex items-center space-x-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold shrink-0 transition-all border ${
+                                            playingVoiceId === ovIntroVoice
+                                              ? 'bg-amber-500 text-white border-amber-600 animate-pulse'
+                                              : 'bg-white text-[#44403C] border-[#D6D3D1] hover:border-[#C2410C] hover:text-[#C2410C]'
+                                          }`}
+                                        >
+                                          {playingVoiceId === ovIntroVoice ? (
+                                            <>
+                                              <Volume2 className="w-3.5 h-3.5 animate-spin" />
+                                              <span>Memutar...</span>
+                                            </>
+                                          ) : (
+                                            <>
+                                              <Play className="w-3.5 h-3.5 fill-current" />
+                                              <span>Dengar</span>
+                                            </>
+                                          )}
+                                        </button>
+                                      </div>
+
+                                      {(() => {
+                                        const list = voices.length > 0 ? voices : FALLBACK_VOICES;
+                                        const cur = list.find((v) => v.id === ovIntroVoice);
+                                        return cur?.description ? (
+                                          <p className="text-[10px] text-[#78716C] italic">
+                                            Karakter: <span className="text-[#44403C] font-medium">{cur.description}</span>
+                                          </p>
+                                        ) : null;
+                                      })()}
+                                    </div>
+                                  )}
+
+                                  {/* Durasi Jeda Intro */}
+                                  <div className="flex items-center justify-between bg-white/70 p-2 rounded-lg border border-[#E7E5E4]">
+                                    <div className="flex flex-col">
+                                      <span className="text-xs font-medium text-[#44403C]">Durasi Jeda / Intro</span>
+                                      <span className="text-[10px] text-[#78716C]">Lama tampilan judul di awal video</span>
+                                    </div>
+                                    <div className="flex items-center space-x-1">
+                                      <input
+                                        type="number"
+                                        min="1.0"
+                                        max="5.0"
+                                        step="0.5"
+                                        value={ovIntroDuration}
+                                        onChange={(e) => setOvIntroDuration(Math.max(1.0, Math.min(5.0, parseFloat(e.target.value) || 2.0)))}
+                                        className="w-14 px-2 py-1 bg-white border border-[#D6D3D1] rounded text-center text-xs font-semibold text-[#1C1917] focus:border-[#C2410C] outline-none"
+                                      />
+                                      <span className="text-[10px] text-[#78716C]">dtk</span>
+                                    </div>
+                                  </div>
+
+                                  {/* Freeze Frame + Darken Background Toggle */}
+                                  <label className={`flex items-center justify-between p-2.5 rounded-lg border transition-all cursor-pointer ${
+                                    ovIntroPause
+                                      ? 'bg-amber-50 border-amber-300 shadow-xs'
+                                      : 'bg-white/70 border-[#E7E5E4] hover:bg-white'
+                                  }`}>
+                                    <div className="flex flex-col pr-2">
+                                      <div className="flex items-center space-x-1.5">
+                                        <span className="text-xs font-semibold text-[#1C1917]">⏸️ Freeze Frame & Darken Background</span>
+                                        {ovIntroPause && (
+                                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300">
+                                            Darken Aktif
+                                          </span>
+                                        )}
+                                      </div>
+                                      <span className="text-[10px] text-[#78716C] mt-0.5">
+                                        Bekukan video pembuka saat judul dibaca suara AI + gelapkan latar belakang video agar judul lebih kontras & cinematic
+                                      </span>
+                                    </div>
+                                    <input
+                                      type="checkbox"
+                                      checked={ovIntroPause}
+                                      onChange={(e) => setOvIntroPause(e.target.checked)}
+                                      className="w-4 h-4 accent-[#C2410C] cursor-pointer shrink-0"
+                                    />
+                                  </label>
+                                </div>
+                              )}
+                            </div>
                             <label className="flex items-center justify-between p-2.5 bg-[#F5F5F4] rounded-xl cursor-pointer">
                               <span className="text-xs font-semibold text-[#1C1917]">CTA Outro</span>
                               <input type="checkbox" checked={ovOutro} onChange={(e) => setOvOutro(e.target.checked)} className="w-4 h-4 accent-[#C2410C] cursor-pointer" />
@@ -3488,13 +3828,35 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                                 onChange={(e) => setNarrationVoice(e.target.value)}
                                 className="flex-1 px-3 py-2 bg-white border border-[#D6D3D1] rounded-xl text-xs font-semibold text-[#1C1917] focus:border-[#C2410C] outline-none"
                               >
-                                {voices.length === 0 && <option value="id-ID-ArdiNeural">Suara default</option>}
-                                {voices.map((voice) => (
-                                  <option key={voice.id} value={voice.id}>
-                                    {voice.name} ({voice.lang})
-                                  </option>
-                                ))}
-                              </select>
+                                  {(voices.length > 0 ? voices : FALLBACK_VOICES).map((voice) => (
+                                    <option key={voice.id} value={voice.id}>
+                                      {voice.name} {voice.description ? `— ${voice.description}` : ''}
+                                    </option>
+                                  ))}
+                                </select>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleVoicePreview(narrationVoice)}
+                                  title="Dengarkan contoh suara ini"
+                                  className={`px-2.5 py-2 border rounded-xl text-xs font-semibold shrink-0 transition-all flex items-center space-x-1 ${
+                                    playingVoiceId === narrationVoice
+                                      ? 'bg-amber-500 text-white border-amber-600 animate-pulse'
+                                      : 'bg-white text-[#44403C] border-[#D6D3D1] hover:border-[#C2410C] hover:text-[#C2410C]'
+                                  }`}
+                                >
+                                  {playingVoiceId === narrationVoice ? (
+                                    <>
+                                      <Volume2 className="w-3.5 h-3.5 animate-spin" />
+                                      <span>Memutar...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Play className="w-3.5 h-3.5 fill-current" />
+                                      <span>Dengar</span>
+                                    </>
+                                  )}
+                                </button>
 
                               <button
                                 type="button"
@@ -3525,6 +3887,134 @@ export const ClipStudioPage: React.FC<ClipStudioPageProps> = ({
                                 className="w-4 h-4 accent-[#C2410C] cursor-pointer disabled:opacity-50"
                               />
                             </label>
+                          </div>
+                        </div>
+
+                        {/* Subtitle / transcript editor panel */}
+                        <div className={controlTab === 'subtitle' ? 'space-y-4' : 'hidden'}>
+                          <div className="p-3 bg-[#F5F5F4] rounded-xl space-y-2.5">
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <label className="text-xs font-semibold text-[#78716C] uppercase tracking-wider flex items-center space-x-1.5">
+                                <Captions className="w-3.5 h-3.5" />
+                                <span>Transkrip & Subtitle ({segments.length} segmen)</span>
+                              </label>
+                              {segmentsLang && (
+                                <span className="px-2 py-0.5 bg-white border border-[#D6D3D1] rounded-md text-[11px] font-mono text-[#57534E]" title="Bahasa terdeteksi Whisper">
+                                  🌐 {segmentsLang}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-[#78716C]">
+                              Koreksi miss-spell di sini — render & analisis berikutnya otomatis memakai teks baru.
+                            </p>
+
+                            <div className="flex items-center space-x-2">
+                              <div className="relative flex-1">
+                                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-[#A8A29E]" />
+                                <input
+                                  type="text"
+                                  value={segmentSearch}
+                                  onChange={(e) => setSegmentSearch(e.target.value)}
+                                  placeholder="Cari kata..."
+                                  className="w-full pl-8 pr-3 py-2 bg-white border border-[#D6D3D1] rounded-xl text-xs text-[#1C1917] focus:border-[#C2410C] outline-none"
+                                />
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => loadSegments()}
+                                disabled={loadingSegments}
+                                className="p-2 bg-white border border-[#D6D3D1] hover:bg-[#E7E5E4] rounded-xl text-[#57534E] transition-colors disabled:opacity-50"
+                                title="Muat ulang"
+                              >
+                                <RefreshCw className={`w-3.5 h-3.5 ${loadingSegments ? 'animate-spin' : ''}`} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={handleSaveSegments}
+                                disabled={savingSegments || !segmentsDirty || segments.length === 0}
+                                className="px-3 py-2 bg-[#C2410C] hover:bg-[#9A3412] text-white text-xs font-semibold rounded-xl transition-all disabled:opacity-50 flex items-center space-x-1.5 shrink-0"
+                              >
+                                {savingSegments ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                                <span>Simpan{segmentsDirty ? '*' : ''}</span>
+                              </button>
+                            </div>
+
+                            {loadingSegments ? (
+                              <div className="py-8 text-center">
+                                <Loader2 className="w-5 h-5 animate-spin text-[#C2410C] mx-auto" />
+                              </div>
+                            ) : segments.length === 0 ? (
+                              <p className="text-xs text-[#78716C] text-center py-6">
+                                Belum ada transkrip. Buka tab ini setelah video berstatus READY.
+                              </p>
+                            ) : (
+                              <div className="space-y-2 max-h-[420px] overflow-y-auto pr-0.5">
+                                {segments.map((seg, i) => {
+                                  const q = segmentSearch.trim().toLowerCase();
+                                  if (q && !seg.text.toLowerCase().includes(q)) return null;
+                                  const edited = JSON.stringify(seg) !== JSON.stringify(segmentsOrig[i]);
+                                  return (
+                                    <div key={i} className={`bg-white border rounded-xl p-2.5 space-y-1.5 ${edited ? 'border-amber-400' : 'border-[#E7E5E4]'}`}>
+                                      <div className="flex items-center justify-between gap-2">
+                                        <span className="text-[11px] font-mono text-[#78716C]">
+                                          {seg.start.toFixed(1)}s → {seg.end.toFixed(1)}s
+                                        </span>
+                                        <button
+                                          type="button"
+                                          onClick={() => setSegments((prev) => prev.filter((_, j) => j !== i))}
+                                          className="text-[#A8A29E] hover:text-red-600 transition-colors"
+                                          title="Hapus segmen"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      </div>
+                                      <textarea
+                                        value={seg.text}
+                                        onChange={(e) => setSegments((prev) => prev.map((s, j) => (j === i ? { ...s, text: e.target.value } : s)))}
+                                        rows={2}
+                                        className="w-full px-2.5 py-1.5 bg-[#F5F5F4] border border-[#E7E5E4] focus:border-[#C2410C] rounded-lg text-xs text-[#1C1917] outline-none resize-y"
+                                      />
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Re-transcribe dengan bahasa pilihan */}
+                          <div className="p-3 bg-[#F5F5F4] rounded-xl space-y-2.5">
+                            <label className="text-xs font-semibold text-[#78716C] uppercase tracking-wider flex items-center space-x-1.5">
+                              <Mic className="w-3.5 h-3.5" />
+                              <span>Transkripsi Ulang</span>
+                            </label>
+                            <p className="text-[11px] text-[#78716C]">
+                              Untuk konten campur bahasa, paksa bahasa dominan agar ejaan lebih tepat.
+                            </p>
+                            <div className="flex gap-2">
+                              <select
+                                value={retransLang}
+                                onChange={(e) => setRetransLang(e.target.value)}
+                                className="flex-1 px-3 py-2 bg-white border border-[#D6D3D1] rounded-xl text-xs font-semibold text-[#1C1917] focus:border-[#C2410C] outline-none"
+                              >
+                                <option value="auto">🌐 Otomatis</option>
+                                <option value="id">🇮🇩 Indonesia</option>
+                                <option value="en">🇬🇧 Inggris</option>
+                                <option value="ms">🇲🇾 Melayu</option>
+                                <option value="zh">🇨🇳 Mandarin</option>
+                                <option value="ja">🇯🇵 Jepang</option>
+                                <option value="ko">🇰🇷 Korea</option>
+                                <option value="ar">🇸🇦 Arab</option>
+                              </select>
+                              <button
+                                type="button"
+                                onClick={handleRetranscribe}
+                                disabled={retranscribing || !activeVideoId}
+                                className="px-3 py-2 bg-[#1C1917] hover:bg-black text-white text-xs font-semibold rounded-xl transition-all disabled:opacity-50 flex items-center space-x-1.5 shrink-0"
+                              >
+                                {retranscribing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                                <span>Mulai</span>
+                              </button>
+                            </div>
                           </div>
                         </div>
                       </div>

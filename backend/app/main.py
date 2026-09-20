@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
@@ -20,7 +21,9 @@ from app.routers import (
     audio,
     sfx,
     jobs,
-    waha
+    youtube_upload,
+    waha,
+    pipeline
 )
 
 logging.basicConfig(
@@ -35,6 +38,13 @@ async def lifespan(app: FastAPI):
     await init_db()
     logger.info("Starting background worker...")
     worker_instance.start()
+    # Pemanasan Whisper di background (model + VAD download sekali di awal,
+    # bukan di tengah job transkripsi pertama yang lalu tampak "macet").
+    try:
+        from app.services.whisper_service import prewarm_transcription
+        asyncio.create_task(prewarm_transcription())
+    except Exception as exc:
+        logger.warning("Gagal menjadwalkan prewarm Whisper: %s", exc)
     yield
     logger.info("Stopping background worker...")
     await worker_instance.stop()
@@ -98,8 +108,11 @@ app.include_router(presets.router, prefix="/api")
 app.include_router(audio.router, prefix="/api")
 app.include_router(sfx.router, prefix="/api")
 app.include_router(jobs.router, prefix="/api")
+app.include_router(youtube_upload.router, prefix="/api")
+app.include_router(youtube_upload.public_router, prefix="/api")
 app.include_router(waha.public_router, prefix="/api")
 app.include_router(waha.router, prefix="/api")
+app.include_router(pipeline.router, prefix="/api")
 
 @app.get("/")
 async def root():

@@ -56,6 +56,7 @@ interface SubtitleFrameProps {
   videoFilter?: string;
   /** Motion graphics overlay preview (judul intro / CTA outro / lower third). */
   overlayIntro?: string | null;
+  overlayIntroPause?: boolean;
   overlayOutro?: string | null;
   overlayLowerThird?: string | null;
   videoSrc?: string;
@@ -107,6 +108,7 @@ export const SubtitleFrame: React.FC<SubtitleFrameProps> = ({
   enableVocalDynamics = false,
   videoFilter = 'none',
   overlayIntro = null,
+  overlayIntroPause = false,
   overlayOutro = null,
   overlayLowerThird = null,
   videoSrc,
@@ -752,10 +754,22 @@ export const SubtitleFrame: React.FC<SubtitleFrameProps> = ({
         </div>
       )}
 
+      {/* Darken background saat intro freeze frame aktif */}
+      {overlayIntro && overlayIntroPause && (
+        <div className="absolute inset-0 bg-black/45 z-25 pointer-events-none transition-opacity duration-300" />
+      )}
+
       {/* Motion Graphics Overlay preview (di atas subtitle) */}
       {overlayIntro && (
-        <div className="absolute left-0 right-0 z-30 text-center pointer-events-none px-4" style={{ top: '15%' }}>
-          <span className="inline-block font-black text-white px-3 py-1 rounded-lg" style={{ fontSize: `${Math.max(10, fontSize * scale * 0.85)}px`, backgroundColor: 'rgba(0,0,0,0.55)', textShadow: '2px 2px 0 rgba(0,0,0,0.8)' }}>
+        <div className="absolute left-0 right-0 z-30 text-center pointer-events-none px-3" style={{ top: '15%' }}>
+          <span
+            className="inline-block max-w-[90%] font-black text-white px-3 py-1.5 rounded-lg whitespace-pre-wrap break-words leading-tight shadow-lg border border-white/20 backdrop-blur-sm"
+            style={{
+              fontSize: `${Math.max(9, Math.min(14, fontSize * scale * (overlayIntro.length > 30 ? 0.65 : 0.85)))}px`,
+              backgroundColor: 'rgba(0,0,0,0.75)',
+              textShadow: '1px 1px 2px rgba(0,0,0,0.9)'
+            }}
+          >
             {overlayIntro}
           </span>
         </div>

@@ -23,8 +23,13 @@ import {
   FramingLayout,
   ScreenMode,
   PersonShape,
+  TranscriptSegment,
   WahaStatus,
   WahaConfig,
+  PipelineConfig,
+  PipelineRule,
+  PipelineMatchTestRequest,
+  PipelineMatchTestResponse,
 } from '../types';
 
 const api = axios.create({
@@ -131,6 +136,18 @@ export const videosApi = {
     const res = await api.get<{ full_text: string; language?: string; json_url: string }>(`/videos/${videoId}/transcript`);
     return res.data;
   },
+  getTranscriptSegments: async (videoId: string) => {
+    const res = await api.get<{ video_id: string; language?: string; count: number; segments: TranscriptSegment[] }>(`/videos/${videoId}/transcript/segments`);
+    return res.data;
+  },
+  updateTranscriptSegments: async (videoId: string, segments: TranscriptSegment[]) => {
+    const res = await api.put<{ video_id: string; language?: string; count: number; segments: TranscriptSegment[] }>(`/videos/${videoId}/transcript/segments`, { segments });
+    return res.data;
+  },
+  retranscribe: async (videoId: string, language?: string) => {
+    const res = await api.post<{ status: string; video_id: string; language: string }>(`/videos/${videoId}/retranscribe`, language ? { language } : {});
+    return res.data;
+  },
   getClips: async (videoId: string) => {
     const res = await api.get<ClipItem[]>(`/videos/${videoId}/clips`);
     return res.data;
@@ -189,6 +206,9 @@ export const clipsApi = {
     enable_intro_title?: boolean;
     intro_title_duration?: number;
     intro_title_style?: string;
+    intro_title_tts?: boolean;
+    intro_title_voice?: string;
+    intro_title_pause?: boolean;
     enable_outro_cta?: boolean;
     outro_cta_text?: string;
     outro_cta_duration?: number;
@@ -259,6 +279,14 @@ export const clipsApi = {
     const res = await api.post<NarrationResult>(`/clips/${clipId}/generate-narration`, payload);
     return res.data;
   },
+  generateSeo: async (clipId: string, payload?: { platform?: string; language?: string }) => {
+    const res = await api.post<{
+      clip_id: string; titles: string[]; description: string; tags: string[];
+      hashtags: string[]; category_suggestion: string;
+      best_upload_time?: string; estimated_reach?: string; caption?: string;
+    }>(`/clips/${clipId}/generate-seo`, payload || {});
+    return res.data;
+  },
   synthesizeVoice: async (
     clipId: string,
     payload: { text: string; voice: string; rate?: string; pitch?: string }
@@ -317,6 +345,35 @@ export const shortsApi = {
     }>(`/shorts/${shortId}/upload-gdrive`);
     return res.data;
   },
+  uploadYoutube: async (shortId: string, payload: {
+    title: string; description?: string; tags?: string[]; hashtags?: string[];
+    privacy_status?: string; category_id?: string; custom_thumbnail_path?: string | null;
+    made_for_kids?: boolean;
+  }) => {
+    const res = await api.post<{ export_id: string; status: string }>(
+      `/shorts/${shortId}/upload-youtube`, payload);
+    return res.data;
+  },
+  uploadThumbnail: async (shortId: string, file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await api.post<{
+      ok: boolean;
+      thumbnail_url: string;
+      custom_thumbnail_path: string;
+      message: string;
+    }>(`/shorts/${shortId}/thumbnail`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return res.data;
+  },
+  getYoutubeStatus: async (shortId: string) => {
+    const res = await api.get<{
+      export_id: string; upload_status: string; upload_progress: number;
+      youtube_video_id?: string; youtube_url?: string; error_message?: string;
+    }>(`/shorts/${shortId}/youtube-status`);
+    return res.data;
+  },
   getDriveStatus: async (shortId: string) => {
     const res = await api.get<{
       export_id: string;
@@ -339,6 +396,10 @@ export const shortsApi = {
     const res = await api.post<BatchActionResponse>('/shorts/batch-upload-gdrive', { ids });
     return res.data;
   },
+  batchUploadYoutube: async (ids: string[]) => {
+    const res = await api.post<BatchActionResponse>('/shorts/batch-upload-youtube', { ids });
+    return res.data;
+  },
 };
 
 export const ttsApi = {
@@ -354,6 +415,7 @@ export const ttsApi = {
     const res = await api.get<TTSItem[]>('/tts/history');
     return res.data;
   },
+  getVoiceSampleUrl: (voiceId: string) => getMediaUrl(`/api/tts/sample/${voiceId}`),
 };
 
 export const settingsApi = {
@@ -395,6 +457,47 @@ export const settingsApi = {
   },
   testGDrive: async () => {
     const res = await api.post<{ ok: boolean; folder_name?: string; error?: string }>('/settings/gdrive/test');
+    return res.data;
+  },
+  saveYouTubeConfig: async (payload: {
+    client_id?: string;
+    client_secret?: string;
+    auto_upload?: boolean;
+    default_privacy?: string;
+    default_category?: string;
+    made_for_kids?: boolean;
+  }) => {
+    const res = await api.post<{ status: string; message: string }>('/youtube/config', payload);
+    return res.data;
+  },
+  getYouTubeConfig: async () => {
+    const res = await api.get<{
+      client_id?: string;
+      auto_upload: boolean;
+      default_privacy: string;
+      default_category: string;
+      made_for_kids: boolean;
+      connected: boolean;
+      channel_name?: string;
+      channel_id?: string;
+    }>('/youtube/config');
+    return res.data;
+  },
+  getYouTubeOAuthUrl: async (redirectUri?: string) => {
+    const params = redirectUri ? { redirect_uri: redirectUri } : {};
+    const res = await api.post<{ auth_url: string; redirect_uri: string }>('/youtube/auth-url', null, { params });
+    return res.data;
+  },
+  testYouTube: async () => {
+    const res = await api.post<{
+      ok: boolean; channel_name?: string; channel_id?: string; subscriber_count?: string; error?: string;
+    }>('/youtube/test');
+    return res.data;
+  },
+  getYouTubeChannel: async () => {
+    const res = await api.get<{
+      ok: boolean; channel_name?: string; channel_id?: string; subscriber_count?: string; error?: string;
+    }>('/youtube/channel');
     return res.data;
   },
   updateGeneral: async (payload: GeneralSettingsUpdate) => {
@@ -551,6 +654,25 @@ export const wahaApi = {
   },
   sendTestMessage: async (message?: string) => {
     const res = await api.post<{ ok: boolean; message: string }>('/waha/test-message', { message });
+    return res.data;
+  },
+};
+
+export const pipelineApi = {
+  getConfig: async () => {
+    const res = await api.get<PipelineConfig>('/pipeline/config');
+    return res.data;
+  },
+  updateConfig: async (payload: Partial<PipelineConfig>) => {
+    const res = await api.post<{ ok: boolean; config: PipelineConfig }>('/pipeline/config', payload);
+    return res.data;
+  },
+  testMatch: async (payload: PipelineMatchTestRequest) => {
+    const res = await api.post<PipelineMatchTestResponse>('/pipeline/test-match', payload);
+    return res.data;
+  },
+  testWhatsApp: async (target_chat?: string) => {
+    const res = await api.post<{ ok: boolean; message: string }>('/pipeline/test-whatsapp', { target_chat });
     return res.data;
   },
 };

@@ -20,6 +20,33 @@ async def list_voices():
     """
     return get_available_voices()
 
+@router.get("/sample/{voice_id}", dependencies=[Depends(get_media_session)])
+async def get_voice_sample(voice_id: str):
+    """
+    Get or generate a quick audio sample for the requested voice so the user can preview who is speaking.
+    """
+    safe_id = "".join(c for c in voice_id if c.isalnum() or c in "-_")
+    rel_path = f"tts_samples/{safe_id}.mp3"
+    abs_path = resolve_path(rel_path)
+    os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+
+    if not os.path.exists(abs_path):
+        sample_text = (
+            "Halo! Ini contoh suara pembuka video shorts kamu."
+            if any(voice_id.startswith(p) for p in ("id-", "jv-", "su-", "ms-"))
+            else "Hello! This is a voice preview for your video intro."
+        )
+        try:
+            await generate_speech(sample_text, abs_path, voice=voice_id)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": {"code": "SAMPLE_FAILED", "message": f"Gagal membuat sampel audio: {e}"}}
+            )
+
+    return FileResponse(abs_path, media_type="audio/mpeg", filename=f"sample_{safe_id}.mp3")
+
+
 @router.post("/generate", response_model=TTSResponse, status_code=status.HTTP_201_CREATED, dependencies=[Depends(get_current_session)])
 async def generate_tts(payload: TTSGenerateRequest, db: AsyncSession = Depends(get_db)):
     """

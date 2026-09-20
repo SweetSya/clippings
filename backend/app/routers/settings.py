@@ -94,6 +94,13 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
     else:
         gdrive_configured = bool(gd_folder and gd_cid and gd_rt)
 
+    yt_auto = (await _get_val(db, "youtube_auto_upload")) == "true"
+    yt_priv = (await _get_val(db, "youtube_default_privacy")) or "public"
+    yt_cat = (await _get_val(db, "youtube_default_category")) or "22"
+    yt_kids = (await _get_val(db, "youtube_default_made_for_kids")) == "true"
+    yt_conn = (await _get_val(db, "yt_upload_connected")) == "true"
+    yt_cid = await _get_val(db, "yt_upload_client_id")
+
     return SettingsResponse(
         llm_base_url=base_url,
         llm_model=model,
@@ -114,8 +121,15 @@ async def get_settings(db: AsyncSession = Depends(get_db)):
         min_clip_seconds=min_clip,
         max_clip_seconds=max_clip,
         yt_quality=yt_quality,
+        whisper_language=(await _get_val(db, "whisper_language")) or "auto",
         clip_view_mode=clip_vm,
-        shorts_view_mode=shorts_vm
+        shorts_view_mode=shorts_vm,
+        youtube_auto_upload=yt_auto,
+        youtube_default_privacy=yt_priv,
+        youtube_default_category=yt_cat,
+        youtube_default_made_for_kids=yt_kids,
+        youtube_connected=yt_conn,
+        youtube_client_id=yt_cid,
     )
 
 @router.post("/ui-preferences")
@@ -142,6 +156,7 @@ async def update_general_settings(payload: GeneralSettingsRequest, db: AsyncSess
     await _set_val(db, "min_clip_seconds", str(payload.min_clip_seconds), is_encrypted=False)
     await _set_val(db, "max_clip_seconds", str(payload.max_clip_seconds), is_encrypted=False)
     await _set_val(db, "yt_quality", payload.yt_quality.strip(), is_encrypted=False)
+    await _set_val(db, "whisper_language", (payload.whisper_language or "auto").strip().lower() or "auto", is_encrypted=False)
     await db.commit()
     return {"status": "saved", "message": "Pengaturan durasi klip dan YouTube berhasil disimpan."}
 

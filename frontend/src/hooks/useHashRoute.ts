@@ -9,6 +9,7 @@ export const VALID_TABS = [
   'tts',
   'audio',
   'preset',
+  'pipeline',
   'settings',
   'queue',
 ] as const;

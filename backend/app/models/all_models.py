@@ -38,6 +38,7 @@ class SourceVideo(Base):
     description = Column(Text, nullable=True)
     auto_generate_shorts = Column(Boolean, default=False)
     file_hash = Column(String(64), nullable=True)  # SHA256 1MB pertama (dedup transkrip)
+    source_url = Column(String(500), nullable=True)  # URL asal (YouTube) bila diunduh dari URL
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     transcript = relationship("Transcript", back_populates="video", uselist=False, cascade="all, delete-orphan")
@@ -79,6 +80,10 @@ class ClipCandidate(Base):
     narration_text = Column(Text, nullable=True)
     narration_voice = Column(String(50), nullable=True)
     narration_audio_path = Column(String(500), nullable=True)
+    seo_titles = Column(JSON, nullable=True)
+    seo_description = Column(Text, nullable=True)
+    seo_tags = Column(JSON, nullable=True)
+    seo_hashtags = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     video = relationship("SourceVideo", back_populates="clips")
@@ -101,11 +106,14 @@ class RenderedShort(Base):
     render_status = Column(String(30), default="PENDING")  # PENDING, RENDERING, COMPLETED, FAILED
     render_progress = Column(Integer, default=0)  # 0..100
     is_drive_uploaded = Column(Boolean, default=False)  # Guard against double uploading!
+    is_youtube_uploaded = Column(Boolean, default=False)  # Guard against double uploading to YouTube!
+    thumbnail_path = Column(String(500), nullable=True)  # thumbnails/{short_id}.jpg
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     clip = relationship("ClipCandidate", back_populates="rendered_shorts")
     exports = relationship("GoogleDriveExport", back_populates="short", cascade="all, delete-orphan")
+    youtube_exports = relationship("YouTubeExport", back_populates="short", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("idx_short_status", "render_status"),
@@ -126,6 +134,31 @@ class GoogleDriveExport(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     short = relationship("RenderedShort", back_populates="exports")
+
+
+class YouTubeExport(Base):
+    """Riwayat upload ke YouTube (Phase 5 — 8.1)."""
+    __tablename__ = "youtube_exports"
+
+    id = Column(String(36), primary_key=True)  # UUID v4
+    short_id = Column(String(36), ForeignKey("rendered_shorts.id", ondelete="CASCADE"), nullable=False)
+    youtube_video_id = Column(String(20), nullable=True)
+    youtube_url = Column(String(200), nullable=True)
+    title = Column(String(100), nullable=False)
+    description = Column(Text, nullable=True)
+    tags = Column(JSON, nullable=True)
+    hashtags = Column(JSON, nullable=True)
+    privacy_status = Column(String(20), default="public")  # public, unlisted, private
+    category_id = Column(String(5), default="22")
+    made_for_kids = Column(Boolean, default=False)  # True jika khusus anak-anak, False untuk semua kalangan umur
+    custom_thumbnail_path = Column(String(500), nullable=True)
+    upload_status = Column(String(30), default="QUEUED")  # QUEUED, UPLOADING, SUCCESS, FAILED
+    upload_progress = Column(Integer, default=0)  # 0..100
+    error_message = Column(Text, nullable=True)
+    uploaded_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    short = relationship("RenderedShort", back_populates="youtube_exports")
 
     __table_args__ = (
         Index("idx_export_status", "upload_status"),
@@ -214,8 +247,11 @@ class TextPreset(Base):
 
     # 2b. Motion Graphics Overlay (Phase 3 — 3.1), semua default OFF
     enable_intro_title = Column(Boolean, default=False)
-    intro_title_duration = Column(Float, default=1.5)
+    intro_title_duration = Column(Float, default=2.0)
     intro_title_style = Column(String(20), default="fade_slide")
+    intro_title_tts = Column(Boolean, default=True)
+    intro_title_voice = Column(String(50), default="id-ID-ArdiNeural")
+    intro_title_pause = Column(Boolean, default=False)
     enable_outro_cta = Column(Boolean, default=False)
     outro_cta_text = Column(String(255), default="Follow untuk lebih banyak!")
     outro_cta_duration = Column(Float, default=2.0)

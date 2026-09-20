@@ -10,6 +10,7 @@ import { SettingsPage } from './pages/SettingsPage';
 import { AudioLibraryPage } from './pages/AudioLibraryPage';
 import { PresetPage } from './pages/PresetPage';
 import { QueuePage } from './pages/QueuePage';
+import { PipelinePage } from './pages/PipelinePage';
 import { authApi, healthApi } from './services/api';
 import { parseHashRoute, buildHash, useHashNavigate, AppTab, VALID_TABS } from './hooks/useHashRoute';
 
@@ -168,6 +169,7 @@ export const App: React.FC = () => {
         {currentTab === 'audio' && <AudioLibraryPage onUseAsBgm={handleUseAsBgm} />}
         {currentTab === 'preset' && <PresetPage />}
         {currentTab === 'queue' && <QueuePage />}
+        {currentTab === 'pipeline' && <PipelinePage />}
         {currentTab === 'settings' && <SettingsPage />}
       </main>
     </div>

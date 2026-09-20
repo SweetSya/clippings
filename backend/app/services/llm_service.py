@@ -984,3 +984,139 @@ Buatkan narasi voiceover yang selaras dengan kedua konteks di atas (maksimal ~{w
         logging.getLogger(__name__).error(f"Failed to generate narration with LLM: {e}")
 
     return f"Di momen menarik ini: {clip_text[:140]}..."
+
+
+def _align_refined_words(
+    old_words: List[Dict[str, Any]],
+    new_text: str,
+    seg_start: float,
+    seg_end: float,
+) -> List[Dict[str, Any]]:
+    """Selaraskan word timestamps ketika teks segmen diperbaiki oleh LLM."""
+    new_tokens = new_text.strip().split()
+    if not new_tokens:
+        return []
+    if not old_words:
+        dur = max(0.1, seg_end - seg_start)
+        step = dur / len(new_tokens)
+        return [
+            {
+                "word": w,
+                "start": round(seg_start + i * step, 2),
+                "end": round(seg_start + (i + 1) * step, 2),
+                "probability": 0.95,
+            }
+            for i, w in enumerate(new_tokens)
+        ]
+    if len(new_tokens) == len(old_words):
+        return [
+            {
+                "word": nw,
+                "start": old_words[i]["start"],
+                "end": old_words[i]["end"],
+                "probability": old_words[i].get("probability", 0.95),
+            }
+            for i, nw in enumerate(new_tokens)
+        ]
+    total_chars = sum(len(w) for w in new_tokens) or 1
+    total_dur = max(0.1, seg_end - seg_start)
+    cur_t = seg_start
+    res = []
+    for w in new_tokens:
+        w_dur = max(0.08, (len(w) / total_chars) * total_dur)
+        w_end = min(seg_end, cur_t + w_dur)
+        res.append({
+            "word": w,
+            "start": round(cur_t, 2),
+            "end": round(w_end, 2),
+            "probability": 0.95,
+        })
+        cur_t = w_end
+    return res
+
+
+async def refine_transcript_with_llm(
+    segments: List[Dict[str, Any]],
+    video_title: str,
+    video_desc: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+    llm_api_key: Optional[str] = None,
+    llm_model: Optional[str] = None,
+    batch_size: int = 40,
+) -> List[Dict[str, Any]]:
+    """
+    Kirim segmen teks transkrip ke AI untuk analisis konteks besar + perbaikan ejaan fonetik
+    (misal 'AD DHoha' -> 'Ad-Dhuha', 'Sekali -GUS' -> 'sekaligus', 'Al ALvinsi' -> 'Al-Insyirah').
+    Memperbarui teks segmen sekaligus menyelaraskan ulang word timestamps.
+    """
+    if not segments:
+        return segments
+    if not llm_base_url:
+        return segments
+
+    system_prompt = (
+        "Kamu adalah editor transkrip audio profesional untuk subtitle video. "
+        "Tugasmu adalah memperbaiki kesalahan ejaan fonetik speech-to-text (ASR), typo, "
+        "pemenggalan kata yang salah/glitch (seperti 'Sekali -GUS' menjadi 'sekaligus'), "
+        "dan istilah khusus (nama surah Al-Qur'an, istilah Islam, nama tokoh, istilah gaming) "
+        "berdasarkan konteks judul dan isi video.\n\n"
+        "ATURAN MUTLAK:\n"
+        "1. JANGAN mengubah arti kalimat dan JANGAN meringkas/menghilangkan kata-kata inti agar tetap sinkron dengan audio pembicara.\n"
+        "2. Perbaiki istilah yang salah dengar/salah eja (misal: 'AD DHoha' -> 'Ad-Dhuha', 'Al ALvinsi' -> 'Al-Insyirah', 'bismillah hirrohman nirrohim' -> 'bismillahirrahmanirrahim').\n"
+        "3. Rapikan kapitalisasi dan tanda hubung/strip yang tidak wajar.\n"
+        "4. Kembalikan HANYA format JSON valid berupa list objek: [{\"id\": <id_asli>, \"text\": \"<teks_perbaikan>\"}]. Tidak boleh ada teks obrolan pembuka/penutup."
+    )
+
+    refined_segments = [dict(s) for s in segments]
+    id_to_seg = {s["id"]: s for s in refined_segments}
+
+    for i in range(0, len(refined_segments), batch_size):
+        batch = refined_segments[i : i + batch_size]
+        items_payload = [{"id": s["id"], "text": s["text"]} for s in batch]
+
+        user_prompt = (
+            f"[KONTEKS VIDEO]\n"
+            f"Judul: {video_title}\n"
+            f"Deskripsi: {video_desc or '-'}\n\n"
+            f"[DAFTAR SEGMEN TEKS YANG PERLU DIPERBAIKI]\n"
+            f"{json.dumps(items_payload, ensure_ascii=False, indent=2)}\n\n"
+            f"Koreksi teks segmen di atas dan kembalikan JSON list objek [{{\"id\": ..., \"text\": ...}}]:"
+        )
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        try:
+            content = await _post_chat(
+                llm_base_url=llm_base_url,
+                llm_api_key=llm_api_key,
+                llm_model=llm_model,
+                messages=messages,
+                temperature=0.2,
+                timeout_seconds=45.0,
+            )
+            clean_json = re.sub(r"```(?:json)?\s*([\s\S]*?)\s*```", r"\1", content.strip())
+            fixes = json.loads(clean_json)
+            if isinstance(fixes, list):
+                for item in fixes:
+                    if isinstance(item, dict) and "id" in item and "text" in item:
+                        seg = id_to_seg.get(item["id"])
+                        if seg:
+                            old_text = seg["text"]
+                            new_text = str(item["text"]).strip()
+                            if new_text and new_text != old_text:
+                                seg["text"] = new_text
+                                if "words" in seg and seg["words"]:
+                                    seg["words"] = _align_refined_words(
+                                        seg["words"],
+                                        new_text,
+                                        seg["start"],
+                                        seg["end"],
+                                    )
+        except Exception as exc:
+            logger.warning("Gagal memperbaiki batch transkrip dengan LLM (%s): %s", i, exc)
+            continue
+
+    return refined_segments

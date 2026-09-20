@@ -20,9 +20,21 @@ def test_intro_overlay_timing_and_position():
     assert "drawtext=" in stage
     assert "Judul Hebat" in stage
     assert "y='h*0.15" in stage  # atas, jauh dari subtitle bawah
-    assert "if(lt(t,1.5),t/1.5,0)" in stage
+    assert "if(lt(t,1.5" in stage
+    assert "box=1" in stage
     assert build_intro_overlay("", duration=1.5) is None
     assert build_intro_overlay("X", duration=0) is None
+
+
+def test_intro_overlay_anti_overflow():
+    long_title = "X MEN MELAWAN ROBOT SENTINEL.... Marvel's Wolverine GAMEPLAY #2"
+    stage = build_intro_overlay(long_title, duration=2.5)
+    assert stage is not None
+    # Pastikan dibungkus jadi multi-baris dan font diperkecil
+    assert "\\\n" in stage
+    assert "fontsize=38" in stage or "fontsize=42" in stage
+    assert "x=(w-text_w)/2" in stage
+    assert "box=1" in stage
 
 
 def test_outro_overlay_last_seconds():

@@ -1,12 +1,12 @@
 import os
 import uuid
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy import select, func, desc, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
-from app.models import RenderedShort, ClipCandidate, GoogleDriveExport, AppJob
+from app.models import RenderedShort, ClipCandidate, GoogleDriveExport, AppJob, SourceVideo
 from app.schemas import (
     RenderedShortItem,
     PaginatedResponse,
@@ -37,6 +37,12 @@ async def list_shorts(
 
     results = (await db.execute(stmt)).all()
 
+    video_ids = {c.video_id for _, c in results if c and c.video_id}
+    videos = {}
+    if video_ids:
+        vrows = (await db.execute(select(SourceVideo).where(SourceVideo.id.in_(video_ids)))).scalars().all()
+        videos = {v.id: v for v in vrows}
+
     items = []
     for short, clip in results:
         # Check latest gdrive export
@@ -61,7 +67,11 @@ async def list_shorts(
             render_status=short.render_status,
             render_progress=short.render_progress,
             is_drive_uploaded=short.is_drive_uploaded,
+            is_youtube_uploaded=bool(short.is_youtube_uploaded),
+            source_url=(videos.get(clip.video_id).source_url if clip and clip.video_id in videos else None),
+            source_title=(videos.get(clip.video_id).original_name if clip and clip.video_id in videos else None),
             download_url=f"/api/shorts/{short.id}/download",
+            thumbnail_url=f"/api/shorts/{short.id}/thumbnail",
             created_at=short.created_at.isoformat() if short.created_at else "",
             gdrive=gd_info
         ))
@@ -93,13 +103,14 @@ async def batch_delete_shorts(payload: BatchDeleteRequest, db: AsyncSession = De
                 await db.delete(short)
                 success += 1
         except Exception as e:
-            logger.error(f"Failed to delete short {s_id}: {e}")
+            logger.error(f"Gagal menghapus shorts {s_id}: {e}")
+            continue
 
     await db.commit()
     return BatchActionResponse(
         success_count=success,
         failed_count=len(payload.ids) - success,
-        message=f"{success} video shorts berhasil dihapus."
+        message=f"{success} shorts berhasil dihapus."
     )
 
 @router.post("/batch-upload-gdrive", response_model=BatchActionResponse, dependencies=[Depends(get_current_session)])
@@ -144,6 +155,7 @@ async def get_short_detail(short_id: str, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Shorts tidak ditemukan.")
 
     clip = await db.get(ClipCandidate, short.clip_id)
+    video = await db.get(SourceVideo, clip.video_id) if clip and clip.video_id else None
     export = await db.scalar(
         select(GoogleDriveExport).where(GoogleDriveExport.short_id == short.id).order_by(desc(GoogleDriveExport.created_at)).limit(1)
     )
@@ -165,7 +177,11 @@ async def get_short_detail(short_id: str, db: AsyncSession = Depends(get_db)):
         render_status=short.render_status,
         render_progress=short.render_progress,
         is_drive_uploaded=short.is_drive_uploaded,
+        is_youtube_uploaded=bool(short.is_youtube_uploaded),
+        source_url=video.source_url if video else None,
+        source_title=video.original_name if video else None,
         download_url=f"/api/shorts/{short.id}/download",
+        thumbnail_url=f"/api/shorts/{short.id}/thumbnail",
         created_at=short.created_at.isoformat() if short.created_at else "",
         gdrive=gd_info
     )
@@ -202,6 +218,78 @@ async def download_short(short_id: str, db: AsyncSession = Depends(get_db)):
         media_type="video/mp4",
         filename=short.output_filename
     )
+
+@router.get("/{short_id}/thumbnail", dependencies=[Depends(get_media_session)])
+async def get_short_thumbnail(short_id: str, db: AsyncSession = Depends(get_db)):
+    short = await db.get(RenderedShort, short_id)
+    if not short:
+        raise HTTPException(status_code=404, detail="Shorts tidak ditemukan.")
+
+    # 1. Cek thumbnails/{short.id}.jpg
+    thumb_path = resolve_path(f"thumbnails/{short.id}.jpg")
+    if os.path.exists(thumb_path):
+        return FileResponse(thumb_path, media_type="image/jpeg")
+
+    # 2. Cek short.thumbnail_path jika diset spesifik
+    if getattr(short, "thumbnail_path", None):
+        cand_path = resolve_path(short.thumbnail_path)
+        if os.path.exists(cand_path):
+            media_type = "image/png" if str(cand_path).lower().endswith(".png") else "image/jpeg"
+            return FileResponse(cand_path, media_type=media_type)
+
+    # 3. Generate on-the-fly jika render video sudah selesai
+    video_abs = resolve_path(short.local_path)
+    if os.path.exists(video_abs):
+        try:
+            os.makedirs(os.path.dirname(thumb_path), exist_ok=True)
+            from app.services.ffmpeg_service import generate_thumbnail
+            await generate_thumbnail(video_abs, thumb_path, seek_seconds=1.0, smart=True)
+            if os.path.exists(thumb_path):
+                short.thumbnail_path = f"thumbnails/{short.id}.jpg"
+                await db.commit()
+                return FileResponse(thumb_path, media_type="image/jpeg")
+        except Exception as exc:
+            logger.warning("Gagal membuat thumbnail on the fly untuk short %s: %s", short.id, exc)
+
+    # 4. Fallback ke thumbnail source video
+    clip = await db.get(ClipCandidate, short.clip_id) if short.clip_id else None
+    if clip and clip.video_id:
+        src_thumb = resolve_path(f"thumbnails/{clip.video_id}.jpg")
+        if os.path.exists(src_thumb):
+            return FileResponse(src_thumb, media_type="image/jpeg")
+
+    raise HTTPException(status_code=404, detail="Thumbnail short belum tersedia.")
+
+@router.post("/{short_id}/thumbnail", dependencies=[Depends(get_current_session)])
+async def upload_short_thumbnail(short_id: str, file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+    short = await db.get(RenderedShort, short_id)
+    if not short:
+        raise HTTPException(status_code=404, detail="Shorts tidak ditemukan.")
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in (".jpg", ".jpeg", ".png", ".webp"):
+        ext = ".jpg"
+
+    thumb_rel = f"thumbnails/{short.id}{ext}"
+    thumb_path = resolve_path(thumb_rel)
+    os.makedirs(os.path.dirname(thumb_path), exist_ok=True)
+
+    content = await file.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Ukuran thumbnail maksimal 10MB.")
+
+    with open(thumb_path, "wb") as f:
+        f.write(content)
+
+    short.thumbnail_path = thumb_rel
+    await db.commit()
+
+    return {
+        "ok": True,
+        "thumbnail_url": f"/api/shorts/{short.id}/thumbnail",
+        "custom_thumbnail_path": thumb_rel,
+        "message": "Thumbnail berhasil disimpan.",
+    }
 
 @router.post("/{short_id}/upload-gdrive", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(get_current_session)])
 async def upload_short_to_gdrive(short_id: str, db: AsyncSession = Depends(get_db)):

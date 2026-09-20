@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   ArrowLeft,
   Save,
@@ -18,9 +18,11 @@ import {
   Layout,
   Layers,
   RotateCcw,
+  Play,
 } from "lucide-react";
 import { presetsApi, audioApi, ttsApi } from "../services/api";
 import { SubtitleFrame } from "../components/SubtitleFrame";
+import { FALLBACK_VOICES } from "./ClipStudioPage";
 import {
   TextPreset,
   TextPresetPayload,
@@ -143,8 +145,11 @@ export const PresetEditorPage: React.FC<PresetEditorPageProps> = ({
     screen_aspect: preset?.screen_aspect || "16:9",
     video_filter: (preset as any)?.video_filter || "none",
     enable_intro_title: Boolean((preset as any)?.enable_intro_title),
-    intro_title_duration: (preset as any)?.intro_title_duration ?? 1.5,
+    intro_title_duration: (preset as any)?.intro_title_duration ?? 2.0,
     intro_title_style: (preset as any)?.intro_title_style || "fade_slide",
+    intro_title_tts: (preset as any)?.intro_title_tts !== undefined ? Boolean((preset as any).intro_title_tts) : true,
+    intro_title_voice: (preset as any)?.intro_title_voice || "id-ID-ArdiNeural",
+    intro_title_pause: Boolean((preset as any)?.intro_title_pause),
     enable_outro_cta: Boolean((preset as any)?.enable_outro_cta),
     outro_cta_text: (preset as any)?.outro_cta_text || "Follow untuk lebih banyak!",
     outro_cta_duration: (preset as any)?.outro_cta_duration ?? 2.0,
@@ -206,6 +211,51 @@ export const PresetEditorPage: React.FC<PresetEditorPageProps> = ({
     });
   }, []);
 
+  const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
+  const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const handleToggleVoicePreview = (voiceId: string) => {
+    if (playingVoiceId === voiceId) {
+      if (voiceAudioRef.current) {
+        voiceAudioRef.current.pause();
+        voiceAudioRef.current = null;
+      }
+      setPlayingVoiceId(null);
+      return;
+    }
+
+    if (voiceAudioRef.current) {
+      voiceAudioRef.current.pause();
+    }
+
+    const audioUrl = ttsApi.getVoiceSampleUrl(voiceId);
+    const audio = new Audio(audioUrl);
+    voiceAudioRef.current = audio;
+    setPlayingVoiceId(voiceId);
+
+    audio.onended = () => {
+      setPlayingVoiceId(null);
+      voiceAudioRef.current = null;
+    };
+    audio.onerror = () => {
+      setPlayingVoiceId(null);
+      voiceAudioRef.current = null;
+    };
+    audio.play().catch((err) => {
+      console.error("Gagal memutar sampel suara", err);
+      setPlayingVoiceId(null);
+    });
+  };
+
+  useEffect(() => {
+    return () => {
+      if (voiceAudioRef.current) {
+        voiceAudioRef.current.pause();
+        voiceAudioRef.current = null;
+      }
+    };
+  }, []);
+
   const handlePositionPresetClick = (pos: "bottom" | "middle" | "top") => {
     setForm((prev) => ({
       ...prev,
@@ -252,6 +302,9 @@ export const PresetEditorPage: React.FC<PresetEditorPageProps> = ({
         enable_intro_title: form.enable_intro_title,
         intro_title_duration: form.intro_title_duration,
         intro_title_style: form.intro_title_style,
+        intro_title_tts: form.intro_title_tts,
+        intro_title_voice: form.intro_title_voice,
+        intro_title_pause: form.intro_title_pause,
         enable_outro_cta: form.enable_outro_cta,
         outro_cta_text: form.outro_cta_text,
         outro_cta_duration: form.outro_cta_duration,
@@ -453,6 +506,7 @@ export const PresetEditorPage: React.FC<PresetEditorPageProps> = ({
               enableVocalDynamics={form.enable_vocal_dynamics}
               videoFilter={form.video_filter}
               overlayIntro={form.enable_intro_title ? "Judul Klip…" : null}
+              overlayIntroPause={Boolean(form.intro_title_pause)}
               overlayOutro={form.enable_outro_cta ? form.outro_cta_text || "Follow untuk lebih banyak!" : null}
               overlayLowerThird={form.enable_lower_third ? form.lower_third_text || "Nama Pembicara" : null}
               className="rounded-[30px]"
@@ -1266,13 +1320,166 @@ export const PresetEditorPage: React.FC<PresetEditorPageProps> = ({
                   Overlay & Animasi
                 </label>
 
-                <label className="flex items-start justify-between gap-3 p-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl cursor-pointer">
-                  <span>
-                    <span className="block text-xs font-bold text-[#1C1917]">Judul Intro (1.5 detik pertama)</span>
-                    <span className="block text-[11px] text-[#78716C] mt-0.5">Judul klip muncul di atas layar dengan fade + luncur.</span>
-                  </span>
-                  <input type="checkbox" checked={Boolean(form.enable_intro_title)} onChange={(e) => setForm({ ...form, enable_intro_title: e.target.checked })} className="mt-1 w-4 h-4 accent-[#C2410C] cursor-pointer shrink-0" />
-                </label>
+                <div className="p-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl space-y-3">
+                  <label className="flex items-start justify-between gap-3 cursor-pointer">
+                    <span>
+                      <span className="block text-xs font-bold text-[#1C1917]">🎬 Judul Intro (Opening Hook)</span>
+                      <span className="block text-[11px] text-[#78716C] mt-0.5">Judul klip muncul di atas layar dan dapat dibacakan suara AI.</span>
+                    </span>
+                    <input type="checkbox" checked={Boolean(form.enable_intro_title)} onChange={(e) => setForm({ ...form, enable_intro_title: e.target.checked })} className="mt-1 w-4 h-4 accent-[#C2410C] cursor-pointer shrink-0" />
+                  </label>
+
+                  {Boolean(form.enable_intro_title) && (
+                    <div className="pt-2 border-t border-[#E7E5E4] space-y-2 text-xs">
+                      <label className="flex items-center justify-between cursor-pointer">
+                        <span className="text-[#44403C] font-medium flex items-center space-x-1">
+                          <span>🔊</span>
+                          <span>Baca Judul dengan Suara AI</span>
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(form.intro_title_tts)}
+                          onChange={(e) => setForm({ ...form, intro_title_tts: e.target.checked })}
+                          className="w-4 h-4 accent-[#C2410C] cursor-pointer"
+                        />
+                      </label>
+
+                      {Boolean(form.intro_title_tts) && (
+                        <div className="space-y-1.5 bg-white/80 p-2.5 rounded-xl border border-[#E7E5E4] shadow-xs">
+                          <div className="flex items-center justify-between">
+                            <label className="text-[10px] font-bold text-[#78716C] uppercase tracking-wide flex items-center space-x-1">
+                              <span>🎙️ Karakter Suara AI Pembuka</span>
+                            </label>
+                            {(() => {
+                              const list = voices.length > 0 ? voices : FALLBACK_VOICES;
+                              const cur = list.find((v) => v.id === (form.intro_title_voice || "id-ID-ArdiNeural"));
+                              return cur ? (
+                                <span className="text-[9px] font-medium text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">
+                                  {cur.gender === "Female" ? "Wanita" : "Pria"} • {cur.lang}
+                                </span>
+                              ) : null;
+                            })()}
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <select
+                              value={form.intro_title_voice || "id-ID-ArdiNeural"}
+                              onChange={(e) => setForm({ ...form, intro_title_voice: e.target.value })}
+                              className="flex-1 px-2.5 py-1.5 bg-white border border-[#D6D3D1] rounded-lg text-xs font-semibold text-[#1C1917] outline-none focus:border-[#C2410C]"
+                            >
+                              <optgroup label="🇮🇩 Bahasa Indonesia & Daerah">
+                                {(voices.length > 0 ? voices : FALLBACK_VOICES)
+                                  .filter((v) => v.lang.endsWith("-ID"))
+                                  .map((v) => (
+                                    <option key={v.id} value={v.id}>
+                                      {v.name} {v.description ? `— ${v.description}` : ""}
+                                    </option>
+                                  ))}
+                              </optgroup>
+                              <optgroup label="🇲🇾 Melayu">
+                                {(voices.length > 0 ? voices : FALLBACK_VOICES)
+                                  .filter((v) => v.lang.startsWith("ms"))
+                                  .map((v) => (
+                                    <option key={v.id} value={v.id}>
+                                      {v.name} {v.description ? `— ${v.description}` : ""}
+                                    </option>
+                                  ))}
+                              </optgroup>
+                              <optgroup label="🇺🇸 English / Multilingual">
+                                {(voices.length > 0 ? voices : FALLBACK_VOICES)
+                                  .filter((v) => v.lang.startsWith("en"))
+                                  .map((v) => (
+                                    <option key={v.id} value={v.id}>
+                                      {v.name} {v.description ? `— ${v.description}` : ""}
+                                    </option>
+                                  ))}
+                              </optgroup>
+                            </select>
+
+                            <button
+                              type="button"
+                              onClick={() => handleToggleVoicePreview(form.intro_title_voice || "id-ID-ArdiNeural")}
+                              title="Dengarkan sampel suara ini"
+                              className={`flex items-center space-x-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold shrink-0 transition-all border ${
+                                playingVoiceId === (form.intro_title_voice || "id-ID-ArdiNeural")
+                                  ? "bg-amber-500 text-white border-amber-600 animate-pulse"
+                                  : "bg-white text-[#44403C] border-[#D6D3D1] hover:border-[#C2410C] hover:text-[#C2410C]"
+                              }`}
+                            >
+                              {playingVoiceId === (form.intro_title_voice || "id-ID-ArdiNeural") ? (
+                                <>
+                                  <Volume2 className="w-3.5 h-3.5 animate-spin" />
+                                  <span>Memutar...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Play className="w-3.5 h-3.5 fill-current" />
+                                  <span>Dengar</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+
+                          {(() => {
+                            const list = voices.length > 0 ? voices : FALLBACK_VOICES;
+                            const cur = list.find((v) => v.id === (form.intro_title_voice || "id-ID-ArdiNeural"));
+                            return cur?.description ? (
+                              <p className="text-[10px] text-[#78716C] italic">
+                                Karakter: <span className="text-[#44403C] font-medium">{cur.description}</span>
+                              </p>
+                            ) : null;
+                          })()}
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between bg-white/70 p-2 rounded-lg border border-[#E7E5E4]">
+                        <div className="flex flex-col">
+                          <span className="text-xs font-medium text-[#44403C]">Durasi Jeda / Intro</span>
+                          <span className="text-[10px] text-[#78716C]">Lama tampilan judul di awal video</span>
+                        </div>
+                        <div className="flex items-center space-x-1">
+                          <input
+                            type="number"
+                            min="1.0"
+                            max="5.0"
+                            step="0.5"
+                            value={form.intro_title_duration ?? 2.0}
+                            onChange={(e) => setForm({ ...form, intro_title_duration: Math.max(1.0, Math.min(5.0, parseFloat(e.target.value) || 2.0)) })}
+                            className="w-14 px-2 py-1 bg-white border border-[#D6D3D1] rounded text-center text-xs font-semibold text-[#1C1917] focus:border-[#C2410C] outline-none"
+                          />
+                          <span className="text-[10px] text-[#78716C]">dtk</span>
+                        </div>
+                      </div>
+
+                      {/* Freeze Frame + Darken Background Toggle */}
+                      <label className={`flex items-center justify-between p-2.5 rounded-lg border transition-all cursor-pointer ${
+                        Boolean(form.intro_title_pause)
+                          ? 'bg-amber-50 border-amber-300 shadow-xs'
+                          : 'bg-white/70 border-[#E7E5E4] hover:bg-white'
+                      }`}>
+                        <div className="flex flex-col pr-2">
+                          <div className="flex items-center space-x-1.5">
+                            <span className="text-xs font-semibold text-[#1C1917]">⏸️ Freeze Frame & Darken Background</span>
+                            {Boolean(form.intro_title_pause) && (
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300">
+                                Darken Aktif
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] text-[#78716C] mt-0.5">
+                            Bekukan video pembuka saat judul dibaca suara AI + gelapkan latar belakang video agar judul lebih kontras & cinematic
+                          </span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(form.intro_title_pause)}
+                          onChange={(e) => setForm({ ...form, intro_title_pause: e.target.checked })}
+                          className="w-4 h-4 accent-[#C2410C] cursor-pointer shrink-0"
+                        />
+                      </label>
+                    </div>
+                  )}
+                </div>
 
                 <label className="flex items-start justify-between gap-3 p-3 bg-[#F5F5F4] border border-[#E7E5E4] rounded-xl cursor-pointer">
                   <span>
@@ -1933,24 +2140,37 @@ export const PresetEditorPage: React.FC<PresetEditorPageProps> = ({
                       <label className="block text-[11px] font-semibold text-[#78716C] mb-1">
                         Pilihan Suara
                       </label>
-                      <select
-                        value={form.narration_voice}
-                        onChange={(e) =>
-                          setForm({ ...form, narration_voice: e.target.value })
-                        }
-                        className="w-full px-3 py-2 bg-white border border-[#D6D3D1] rounded-lg text-xs font-medium text-[#1C1917] outline-none"
-                      >
-                        {voices.length === 0 && (
-                          <option value="id-ID-ArdiNeural">
-                            id-ID-ArdiNeural
-                          </option>
-                        )}
-                        {voices.map((v) => (
-                          <option key={v.id} value={v.id}>
-                            {v.name} ({v.lang})
-                          </option>
-                        ))}
-                      </select>
+                      <div className="flex gap-1.5">
+                        <select
+                          value={form.narration_voice}
+                          onChange={(e) =>
+                            setForm({ ...form, narration_voice: e.target.value })
+                          }
+                          className="flex-1 px-3 py-2 bg-white border border-[#D6D3D1] rounded-lg text-xs font-medium text-[#1C1917] outline-none"
+                        >
+                          {(voices.length > 0 ? voices : FALLBACK_VOICES).map((v) => (
+                            <option key={v.id} value={v.id}>
+                              {v.name} {v.description ? `— ${v.description}` : ""}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => handleToggleVoicePreview(form.narration_voice)}
+                          title="Dengarkan sampel suara ini"
+                          className={`px-2 py-1.5 border rounded-lg text-xs font-semibold shrink-0 transition-all flex items-center space-x-1 ${
+                            playingVoiceId === form.narration_voice
+                              ? "bg-amber-500 text-white border-amber-600 animate-pulse"
+                              : "bg-white text-[#44403C] border-[#D6D3D1] hover:border-[#C2410C] hover:text-[#C2410C]"
+                          }`}
+                        >
+                          {playingVoiceId === form.narration_voice ? (
+                            <Volume2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Play className="w-3.5 h-3.5 fill-current" />
+                          )}
+                        </button>
+                      </div>
                     </div>
 
                     <div>

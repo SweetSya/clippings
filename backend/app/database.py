@@ -59,6 +59,22 @@ async def init_db():
                 await conn.execute(text("ALTER TABLE source_videos ADD COLUMN video_type VARCHAR(50)"))
             if cols and "file_hash" not in cols:
                 await conn.execute(text("ALTER TABLE source_videos ADD COLUMN file_hash VARCHAR(64)"))
+            if cols and "source_url" not in cols:
+                await conn.execute(text("ALTER TABLE source_videos ADD COLUMN source_url VARCHAR(500)"))
+
+            # Migrate rendered_shorts columns
+            res_shorts = await conn.execute(text("PRAGMA table_info(rendered_shorts)"))
+            short_cols = [row[1] for row in res_shorts.fetchall()]
+            if short_cols and "is_youtube_uploaded" not in short_cols:
+                await conn.execute(text("ALTER TABLE rendered_shorts ADD COLUMN is_youtube_uploaded BOOLEAN DEFAULT 0"))
+            if short_cols and "thumbnail_path" not in short_cols:
+                await conn.execute(text("ALTER TABLE rendered_shorts ADD COLUMN thumbnail_path VARCHAR(500)"))
+
+            # Migrate youtube_exports columns
+            res_yt = await conn.execute(text("PRAGMA table_info(youtube_exports)"))
+            yt_cols = [row[1] for row in res_yt.fetchall()]
+            if yt_cols and "made_for_kids" not in yt_cols:
+                await conn.execute(text("ALTER TABLE youtube_exports ADD COLUMN made_for_kids BOOLEAN DEFAULT 0"))
 
             # Migrate clip_candidates columns
             res_clips = await conn.execute(text("PRAGMA table_info(clip_candidates)"))
@@ -69,6 +85,14 @@ async def init_db():
                 await conn.execute(text("ALTER TABLE clip_candidates ADD COLUMN narration_voice VARCHAR(50)"))
             if clip_cols and "narration_audio_path" not in clip_cols:
                 await conn.execute(text("ALTER TABLE clip_candidates ADD COLUMN narration_audio_path VARCHAR(500)"))
+            if clip_cols and "seo_titles" not in clip_cols:
+                await conn.execute(text("ALTER TABLE clip_candidates ADD COLUMN seo_titles JSON"))
+            if clip_cols and "seo_description" not in clip_cols:
+                await conn.execute(text("ALTER TABLE clip_candidates ADD COLUMN seo_description TEXT"))
+            if clip_cols and "seo_tags" not in clip_cols:
+                await conn.execute(text("ALTER TABLE clip_candidates ADD COLUMN seo_tags JSON"))
+            if clip_cols and "seo_hashtags" not in clip_cols:
+                await conn.execute(text("ALTER TABLE clip_candidates ADD COLUMN seo_hashtags JSON"))
             if clip_cols and "composite_score" not in clip_cols:
                 await conn.execute(text("ALTER TABLE clip_candidates ADD COLUMN composite_score INTEGER DEFAULT 0"))
             if clip_cols and "speech_rate" not in clip_cols:
@@ -145,9 +169,15 @@ async def init_db():
                 if "enable_intro_title" not in preset_cols:
                     await conn.execute(text("ALTER TABLE text_presets ADD COLUMN enable_intro_title BOOLEAN DEFAULT 0"))
                 if "intro_title_duration" not in preset_cols:
-                    await conn.execute(text("ALTER TABLE text_presets ADD COLUMN intro_title_duration FLOAT DEFAULT 1.5"))
+                    await conn.execute(text("ALTER TABLE text_presets ADD COLUMN intro_title_duration FLOAT DEFAULT 2.0"))
                 if "intro_title_style" not in preset_cols:
                     await conn.execute(text("ALTER TABLE text_presets ADD COLUMN intro_title_style VARCHAR(20) DEFAULT 'fade_slide'"))
+                if "intro_title_tts" not in preset_cols:
+                    await conn.execute(text("ALTER TABLE text_presets ADD COLUMN intro_title_tts BOOLEAN DEFAULT 1"))
+                if "intro_title_voice" not in preset_cols:
+                    await conn.execute(text("ALTER TABLE text_presets ADD COLUMN intro_title_voice VARCHAR(50) DEFAULT 'id-ID-ArdiNeural'"))
+                if "intro_title_pause" not in preset_cols:
+                    await conn.execute(text("ALTER TABLE text_presets ADD COLUMN intro_title_pause BOOLEAN DEFAULT 0"))
                 if "enable_outro_cta" not in preset_cols:
                     await conn.execute(text("ALTER TABLE text_presets ADD COLUMN enable_outro_cta BOOLEAN DEFAULT 0"))
                 if "outro_cta_text" not in preset_cols:

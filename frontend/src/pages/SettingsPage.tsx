@@ -22,6 +22,7 @@ import {
   LogIn,
   MessageSquare,
   Smartphone,
+  Mic,
   Send,
   QrCode,
   Unlink,
@@ -37,7 +38,7 @@ import { settingsApi, healthApi, wahaApi } from '../services/api';
 import { HealthStatus, WahaStatus } from '../types';
 import { useTheme } from '../hooks/useTheme';
 
-type TabType = 'ai' | 'video' | 'gdrive' | 'waha' | 'system';
+type TabType = 'ai' | 'video' | 'gdrive' | 'youtube' | 'waha' | 'system';
 
 export const SettingsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabType>('ai');
@@ -72,8 +73,18 @@ export const SettingsPage: React.FC = () => {
   const [minClipSeconds, setMinClipSeconds] = useState(10);
   const [maxClipSeconds, setMaxClipSeconds] = useState(60);
   const [ytQuality, setYtQuality] = useState('1080p');
+  const [whisperLang, setWhisperLang] = useState('auto');
 
   // YouTube Cookies & Anti-Bot State
+  const [ytClientId, setYtClientId] = useState('');
+  const [ytClientSecret, setYtClientSecret] = useState('');
+  const [ytConnected, setYtConnected] = useState(false);
+  const [ytAutoUpload, setYtAutoUpload] = useState(false);
+  const [ytDefaultPrivacy, setYtDefaultPrivacy] = useState('public');
+  const [ytChannel, setYtChannel] = useState<{ channel_name?: string; subscriber_count?: string } | null>(null);
+  const [savingYt, setSavingYt] = useState(false);
+  const [testingYt, setTestingYt] = useState(false);
+  const [connectingYt, setConnectingYt] = useState(false);
   const [ytCookiesStatus, setYtCookiesStatus] = useState<{ has_cookies: boolean; file_path?: string; file_size_bytes?: number; line_count?: number } | null>(null);
   const [ytCookiesInput, setYtCookiesInput] = useState('');
   const [savingCookies, setSavingCookies] = useState(false);
@@ -116,6 +127,12 @@ export const SettingsPage: React.FC = () => {
       if (event.data?.type === 'gdrive_oauth_success') {
         setOauthConnected(true);
         setMessage('Akun Google berhasil diotorisasi via OAuth 2.0!');
+        loadSettings();
+        setTimeout(() => setMessage(null), 4500);
+      }
+      if (event.data?.type === 'youtube_oauth_success') {
+        setYtConnected(true);
+        setMessage('Akun YouTube berhasil diotorisasi!');
         loadSettings();
         setTimeout(() => setMessage(null), 4500);
       }
@@ -177,12 +194,32 @@ export const SettingsPage: React.FC = () => {
       if (s.min_clip_seconds !== undefined) setMinClipSeconds(s.min_clip_seconds);
       if (s.max_clip_seconds !== undefined) setMaxClipSeconds(s.max_clip_seconds);
       if (s.yt_quality) setYtQuality(s.yt_quality);
+      if (s.whisper_language) setWhisperLang(s.whisper_language);
 
       try {
         const c = await settingsApi.getYouTubeCookiesStatus();
         setYtCookiesStatus(c);
       } catch (err) {
         // silent
+      }
+      try {
+        const ytCfg = await settingsApi.getYouTubeConfig();
+        if (ytCfg.client_id) setYtClientId(ytCfg.client_id);
+        setYtAutoUpload(Boolean(ytCfg.auto_upload));
+        if (ytCfg.default_privacy) setYtDefaultPrivacy(ytCfg.default_privacy);
+        setYtConnected(Boolean(ytCfg.connected));
+        if (ytCfg.connected) {
+          setYtChannel({ channel_name: ytCfg.channel_name, subscriber_count: undefined });
+        }
+      } catch (err) {
+        try {
+          const ch = await settingsApi.getYouTubeChannel();
+          setYtConnected(Boolean(ch.ok));
+          if (ch.ok) setYtChannel({ channel_name: ch.channel_name, subscriber_count: ch.subscriber_count });
+          else setYtChannel(null);
+        } catch {
+          setYtConnected(false);
+        }
       }
     } catch (e) {
       console.error('Failed to load settings', e);
@@ -413,6 +450,7 @@ export const SettingsPage: React.FC = () => {
         min_clip_seconds: Number(minClipSeconds),
         max_clip_seconds: Number(maxClipSeconds),
         yt_quality: ytQuality,
+        whisper_language: whisperLang,
       });
       setMessage('Pengaturan durasi klip & YouTube berhasil disimpan!');
       setTimeout(() => setMessage(null), 3500);
@@ -560,6 +598,66 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
+  const handleSaveYouTube = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSavingYt(true);
+    try {
+      const res = await settingsApi.saveYouTubeConfig({
+        client_id: ytClientId.trim() || undefined,
+        client_secret: ytClientSecret.trim() || undefined,
+        auto_upload: ytAutoUpload,
+        default_privacy: ytDefaultPrivacy,
+        made_for_kids: false,
+      });
+      setMessage(res?.message || 'Konfigurasi YouTube disimpan.');
+      setYtClientSecret('');
+      setTimeout(() => setMessage(null), 4000);
+    } catch (err: any) {
+      alert('Gagal menyimpan konfigurasi YouTube: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setSavingYt(false);
+    }
+  };
+
+  const handleConnectYouTube = async () => {
+    setConnectingYt(true);
+    try {
+      if (ytClientId.trim() || ytClientSecret.trim()) {
+        await settingsApi.saveYouTubeConfig({
+          client_id: ytClientId.trim() || undefined,
+          client_secret: ytClientSecret.trim() || undefined,
+        });
+        setYtClientSecret('');
+      }
+      const res = await settingsApi.getYouTubeOAuthUrl();
+      const popup = window.open(res.auth_url, 'YouTubeAuthPopup', 'width=600,height=700,status=no,toolbar=no,menubar=no');
+      if (!popup) window.location.href = res.auth_url;
+    } catch (err: any) {
+      alert('Gagal memulai otorisasi: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setConnectingYt(false);
+    }
+  };
+
+  const handleTestYouTube = async () => {
+    setTestingYt(true);
+    try {
+      const res = await settingsApi.testYouTube();
+      setYtConnected(res.ok);
+      if (res.ok) {
+        setYtChannel({ channel_name: res.channel_name, subscriber_count: res.subscriber_count });
+        setMessage(`YouTube terhubung: ${res.channel_name || 'channel'}!`);
+        setTimeout(() => setMessage(null), 4000);
+      } else {
+        alert('Tes gagal: ' + (res.error || 'unknown'));
+      }
+    } catch (err: any) {
+      alert('Tes gagal: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setTestingYt(false);
+    }
+  };
+
   return (
     <div className="max-w-4xl mx-auto space-y-6">
       <div>
@@ -623,6 +721,24 @@ export const SettingsPage: React.FC = () => {
           <span
             className={`w-2 h-2 rounded-full ${
               oauthConnected ? 'bg-emerald-500' : 'bg-[#A8A29E]'
+            }`}
+          />
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('youtube')}
+          className={`flex items-center space-x-2 px-4 py-3 text-sm font-semibold border-b-2 transition-all whitespace-nowrap ${
+            activeTab === 'youtube'
+              ? 'border-[#C2410C] text-[#C2410C]'
+              : 'border-transparent text-ember-neutral hover:text-ember-text-primary hover:border-[#A8A29E]'
+          }`}
+        >
+          <Youtube className="w-4 h-4" />
+          <span>YouTube Upload</span>
+          <span
+            className={`w-2 h-2 rounded-full ${
+              ytConnected ? 'bg-emerald-500' : 'bg-[#A8A29E]'
             }`}
           />
         </button>
@@ -1015,6 +1131,32 @@ export const SettingsPage: React.FC = () => {
               </select>
               <p className="text-[11px] text-ember-neutral mt-1">
                 Kualitas video standar saat menempelkan link YouTube ke dalam sistem.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-ember-neutral uppercase tracking-wider mb-1 flex items-center space-x-1.5">
+                <Mic className="w-3.5 h-3.5 text-[#C2410C]" />
+                <span>Bahasa Transkripsi (Whisper)</span>
+              </label>
+              <select
+                value={whisperLang}
+                onChange={(e) => setWhisperLang(e.target.value)}
+                className="w-full px-3 py-2 bg-ember-surface border border-ember-border rounded-xl text-sm font-semibold text-ember-text-primary focus:border-[#C2410C] outline-none"
+              >
+                <option value="auto">🌐 Otomatis (deteksi per file)</option>
+                <option value="id">🇮🇩 Indonesia</option>
+                <option value="en">🇬🇧 Inggris</option>
+                <option value="ms">🇲🇾 Melayu</option>
+                <option value="zh">🇨🇳 Mandarin</option>
+                <option value="ja">🇯🇵 Jepang</option>
+                <option value="ko">🇰🇷 Korea</option>
+                <option value="ar">🇸🇦 Arab</option>
+                <option value="hi">🇮🇳 Hindi</option>
+                <option value="es">🇪🇸 Spanyol</option>
+              </select>
+              <p className="text-[11px] text-ember-neutral mt-1">
+                Paksa bahasa bila auto-detect salah (mis. konten campur ID–EN). Berlaku untuk transkripsi berikutnya; terlihat di badge bahasa pada editor subtitle.
               </p>
             </div>
 
@@ -1425,6 +1567,177 @@ export const SettingsPage: React.FC = () => {
               </div>
             )}
           </form>
+        </div>
+      )}
+
+      {/* TAB: YOUTUBE UPLOAD */}
+      {activeTab === 'youtube' && (
+        <div className="bg-white border border-ember-border rounded-2xl p-6 shadow-sm space-y-6">
+          <div className="flex items-center justify-between pb-3 border-b border-ember-border">
+            <div className="flex items-center space-x-2">
+              <Youtube className="w-5 h-5 text-red-600" />
+              <h3 className="font-semibold text-base text-ember-text-primary">YouTube Upload Configuration</h3>
+            </div>
+            <span
+              className={`px-2.5 py-1 text-[11px] font-bold rounded-full ${
+                ytConnected ? 'bg-emerald-100 text-emerald-800' : 'bg-stone-200 text-stone-600'
+              }`}
+            >
+              {ytConnected ? `Terhubung${ytChannel?.channel_name ? `: ${ytChannel.channel_name}` : ''}` : 'Belum terhubung'}
+            </span>
+          </div>
+
+          <p className="text-xs text-ember-neutral">
+            Buat OAuth 2.0 Web Client di Google Cloud Console (aktifkan <strong>YouTube Data API v3</strong>),
+            tambahkan redirect URI <code className="bg-ember-surface px-1 py-0.5 rounded font-mono text-[#C2410C]">http://localhost:8000/api/youtube/callback</code>,
+            lalu masukkan Client ID & Secret di bawah.
+          </p>
+
+          <form onSubmit={handleSaveYouTube} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-ember-neutral uppercase tracking-wider mb-1">
+                OAuth Client ID
+              </label>
+              <input
+                type="text"
+                value={ytClientId}
+                onChange={(e) => setYtClientId(e.target.value)}
+                placeholder="xxx.apps.googleusercontent.com"
+                className="w-full px-3 py-2 bg-ember-surface border border-ember-border rounded-xl text-xs font-mono text-ember-text-primary focus:border-[#C2410C] outline-none"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-ember-neutral uppercase tracking-wider mb-1">
+                OAuth Client Secret
+              </label>
+              <input
+                type="password"
+                value={ytClientSecret}
+                onChange={(e) => setYtClientSecret(e.target.value)}
+                placeholder="Kosongkan bila tak diganti"
+                className="w-full px-3 py-2 bg-ember-surface border border-ember-border rounded-xl text-xs font-mono text-ember-text-primary focus:border-[#C2410C] outline-none"
+              />
+            </div>
+            <div className="sm:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <button
+                type="submit"
+                disabled={savingYt}
+                className="py-2.5 bg-[#C2410C] hover:bg-[#9A3412] text-white text-xs font-semibold rounded-xl transition-all flex items-center justify-center space-x-1.5 disabled:opacity-50"
+              >
+                {savingYt ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                <span>Simpan Pengaturan YouTube</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleConnectYouTube}
+                disabled={connectingYt}
+                className="py-2.5 bg-white hover:bg-ember-surface border border-ember-border text-ember-text-primary text-xs font-semibold rounded-xl transition-all flex items-center justify-center space-x-1.5 disabled:opacity-50"
+              >
+                {connectingYt ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <LogIn className="w-3.5 h-3.5 text-[#C2410C]" />}
+                <span>{ytConnected ? 'Hubungkan Ulang' : 'Hubungkan YouTube'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleTestYouTube}
+                disabled={testingYt}
+                className="py-2.5 bg-white hover:bg-ember-surface border border-ember-border text-ember-text-primary text-xs font-semibold rounded-xl transition-all flex items-center justify-center space-x-1.5 disabled:opacity-50"
+              >
+                {testingYt ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />}
+                <span>Uji Koneksi</span>
+              </button>
+            </div>
+          </form>
+
+          {/* Auto Upload & Default Publishing Settings */}
+          <div className="pt-4 border-t border-ember-border space-y-4">
+            <h4 className="font-semibold text-sm text-ember-text-primary flex items-center space-x-2">
+              <span>🚀</span>
+              <span>Otomatisasi & Default Penerbitan Shorts</span>
+            </h4>
+
+            {/* Toggle Auto Upload */}
+            <div className="bg-ember-surface border border-ember-border rounded-xl p-4 flex items-center justify-between gap-4">
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-ember-text-primary">Auto Upload ke YouTube saat Render Selesai</span>
+                  {ytAutoUpload ? (
+                    <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-emerald-100 text-emerald-800">Aktif</span>
+                  ) : (
+                    <span className="px-2 py-0.5 text-[10px] font-bold rounded-full bg-stone-200 text-stone-600">Nonaktif</span>
+                  )}
+                </div>
+                <p className="text-[11px] text-ember-neutral">
+                  Ketika sebuah short selesai dirender, worker otomatis menjadwalkan ke antrean upload YouTube dengan judul kontekstual, deskripsi, hashtags, dan thumbnail.
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  checked={ytAutoUpload}
+                  onChange={(e) => setYtAutoUpload(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-stone-300 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-stone-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#C2410C]"></div>
+              </label>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Default Privacy */}
+              <div>
+                <label className="block text-xs font-semibold text-ember-neutral uppercase tracking-wider mb-1">
+                  Default Privasi Upload
+                </label>
+                <select
+                  value={ytDefaultPrivacy}
+                  onChange={(e) => setYtDefaultPrivacy(e.target.value)}
+                  className="w-full px-3 py-2 bg-ember-surface border border-ember-border rounded-xl text-xs font-semibold text-ember-text-primary focus:border-[#C2410C] outline-none"
+                >
+                  <option value="public">🌍 Public (Langsung Tayang ke Publik)</option>
+                  <option value="unlisted">🔗 Unlisted (Hanya yang Punya Link)</option>
+                  <option value="private">🔒 Private (Hanya Pemilik Channel)</option>
+                </select>
+                <p className="text-[10px] text-ember-neutral mt-1">
+                  Pilihan status visibilitas saat upload otomatis dijalankan.
+                </p>
+              </div>
+
+              {/* Default Audience / Age */}
+              <div>
+                <label className="block text-xs font-semibold text-ember-neutral uppercase tracking-wider mb-1">
+                  Kategori Usia / Audiens (Age)
+                </label>
+                <div className="px-3 py-2 bg-ember-surface border border-ember-border rounded-xl flex items-center justify-between">
+                  <div className="text-xs">
+                    <span className="font-semibold text-ember-text-primary">Semua Kalangan Umur</span>
+                    <span className="text-[10px] text-ember-neutral block">selfDeclaredMadeForKids: false</span>
+                  </div>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                    Otomatis Aktif
+                  </span>
+                </div>
+                <p className="text-[10px] text-ember-neutral mt-1">
+                  Komentar dan notifikasi subscriber tetap aktif sesuai standar YouTube.
+                </p>
+              </div>
+            </div>
+
+            {/* Thumbnail Auto Info Banner */}
+            <div className="bg-orange-50/60 border border-orange-200 rounded-xl p-3 flex items-start gap-2.5">
+              <span className="text-base leading-none">🖼️</span>
+              <div className="text-xs text-orange-950">
+                <span className="font-semibold">Auto Thumbnail YouTube:</span>
+                <p className="text-[11px] text-orange-900 mt-0.5">
+                  Setiap klip yang selesai dirender secara otomatis memiliki thumbnail resolusi tinggi dari frame wajah/fokus terbaik, dan akan otomatis disematkan saat diunggah ke YouTube.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {ytChannel?.subscriber_count && (
+            <p className="text-xs text-ember-neutral">
+              Subscriber: <strong className="text-ember-text-primary">{ytChannel.subscriber_count}</strong>
+            </p>
+          )}
         </div>
       )}
 

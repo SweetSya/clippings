@@ -1,6 +1,7 @@
 import os
 import re
 import uuid
+import json
 from typing import Optional
 import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query, Response, status, Form
@@ -21,7 +22,11 @@ from app.schemas import (
     YouTubeDownloadRequest,
     BatchDeleteRequest,
     BatchActionResponse,
-    ReanalyzeRequest
+    ReanalyzeRequest,
+    TranscriptSegmentItem,
+    TranscriptSegmentsResponse,
+    TranscriptSegmentsUpdate,
+    RetranscribeRequest
 )
 from app.core.security import get_current_session, get_media_session
 from app.config import settings
@@ -189,7 +194,8 @@ async def download_yt_video(
         duration_seconds=duration,
         status="DOWNLOADING",
         description=info.get("description") or None,
-        auto_generate_shorts=bool(payload.auto_generate)
+        auto_generate_shorts=bool(payload.auto_generate),
+        source_url=url
     )
     db.add(video_record)
 
@@ -492,6 +498,124 @@ async def download_transcript_json(video_id: str, db: AsyncSession = Depends(get
         raise HTTPException(status_code=404, detail="Berkas transcript JSON tidak ditemukan.")
     return FileResponse(t_path, media_type="application/json", filename=f"transcript_{video_id}.json")
 
+@router.get("/{video_id}/transcript/segments", response_model=TranscriptSegmentsResponse, dependencies=[Depends(get_current_session)])
+async def get_transcript_segments(video_id: str, db: AsyncSession = Depends(get_db)):
+    video = await db.get(SourceVideo, video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video tidak ditemukan.")
+    t_path = resolve_path(f"transcripts/{video_id}.json")
+    if not os.path.exists(t_path):
+        raise HTTPException(status_code=404, detail="Transkrip belum tersedia.")
+    try:
+        with open(t_path, "r", encoding="utf-8") as f:
+            t_data = json.load(f)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Berkas transkrip rusak.")
+    segments = []
+    for s in t_data.get("segments", []):
+        try:
+            segments.append(TranscriptSegmentItem(
+                start=float(s.get("start", 0.0)),
+                end=float(s.get("end", 0.0)),
+                text=str(s.get("text", "")).strip(),
+            ))
+        except Exception:
+            continue
+    return TranscriptSegmentsResponse(
+        video_id=video_id, language=video.language,
+        count=len(segments), segments=segments,
+    )
+
+@router.put("/{video_id}/transcript/segments", response_model=TranscriptSegmentsResponse, dependencies=[Depends(get_current_session)])
+async def update_transcript_segments(video_id: str, payload: TranscriptSegmentsUpdate, db: AsyncSession = Depends(get_db)):
+    """
+    Koreksi manual subtitle per segmen (perbaiki miss-spell). Teks yang diubah
+    kehilangan word-timing lama agar render memakai pembagian kata baru.
+    Berlaku untuk render & analisis berikutnya (baca dari JSON ini).
+    """
+    video = await db.get(SourceVideo, video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video tidak ditemukan.")
+    if video.status in ("TRANSCRIBING", "EXTRACTING_AUDIO"):
+        raise HTTPException(status_code=409, detail="Video sedang ditranskripsi. Tunggu selesai dulu.")
+    t_path = resolve_path(f"transcripts/{video_id}.json")
+    if not os.path.exists(t_path):
+        raise HTTPException(status_code=404, detail="Transkrip belum tersedia.")
+
+    new_items = [{"start": s.start, "end": s.end, "text": s.text.strip()} for s in payload.segments]
+    # Samakan urutan berdasar waktu mulai agar ASS/render konsisten
+    new_items.sort(key=lambda x: (x["start"], x["end"]))
+
+    try:
+        with open(t_path, "r", encoding="utf-8") as f:
+            t_data = json.load(f)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Berkas transkrip rusak.")
+    old_segments = t_data.get("segments", [])
+
+    merged = []
+    for idx, item in enumerate(new_items):
+        words = []
+        if idx < len(old_segments):
+            old = old_segments[idx]
+            try:
+                same_span = (abs(float(old.get("start", -1)) - item["start"]) < 0.01
+                             and abs(float(old.get("end", -1)) - item["end"]) < 0.01)
+            except (TypeError, ValueError):
+                same_span = False
+            if same_span and str(old.get("text", "")).strip() == item["text"]:
+                words = old.get("words", []) or []
+        merged.append({"start": item["start"], "end": item["end"],
+                       "text": item["text"], "words": words})
+
+    t_data["segments"] = merged
+    t_data["full_text"] = " ".join(m["text"] for m in merged if m["text"])
+    try:
+        with open(t_path, "w", encoding="utf-8") as f:
+            json.dump(t_data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Gagal menyimpan transkrip.")
+
+    transcript = await db.scalar(select(Transcript).where(Transcript.video_id == video_id))
+    if transcript:
+        transcript.full_text = t_data["full_text"]
+        await db.commit()
+
+    return TranscriptSegmentsResponse(
+        video_id=video_id, language=video.language, count=len(merged),
+        segments=[TranscriptSegmentItem(start=m["start"], end=m["end"], text=m["text"]) for m in merged],
+    )
+
+@router.post("/{video_id}/retranscribe", status_code=status.HTTP_202_ACCEPTED, dependencies=[Depends(get_current_session)])
+async def retranscribe_video(video_id: str, payload: RetranscribeRequest = None, db: AsyncSession = Depends(get_db)):
+    """Antre ulang transkripsi dengan bahasa tertentu (atau setting global bila kosong)."""
+    video = await db.get(SourceVideo, video_id)
+    if not video:
+        raise HTTPException(status_code=404, detail="Video tidak ditemukan.")
+    if video.status in ("EXTRACTING_AUDIO", "TRANSCRIBING", "ANALYZING"):
+        raise HTTPException(status_code=409, detail="Video sedang diproses. Tunggu selesai dulu.")
+    audio_path = resolve_path(f"audio/{video_id}.wav")
+    if not os.path.exists(audio_path):
+        raise HTTPException(status_code=404, detail="Berkas audio tidak ditemukan. Proses video dulu.")
+
+    lang = None
+    if payload and payload.language:
+        lang = payload.language.strip().lower() or None
+        if lang == "auto":
+            lang = None
+
+    video.status = "TRANSCRIBING"
+    video.error_message = None
+    db.add(AppJob(
+        id=uuid.uuid4().hex,
+        job_type="TRANSCRIBE",
+        ref_id=video_id,
+        status="QUEUED",
+        payload={"language": lang} if lang else None,
+    ))
+    await db.commit()
+    return {"status": "QUEUED", "video_id": video_id, "language": lang or "auto"}
+
 @router.get("/{video_id}/clips", response_model=list[ClipCandidateResponse], dependencies=[Depends(get_current_session)])
 async def get_video_clips(video_id: str, db: AsyncSession = Depends(get_db)):
     # Urut composite (COALESCE ke hook_score untuk baris lama yang composite-nya 0)
@@ -514,6 +638,10 @@ async def get_video_clips(video_id: str, db: AsyncSession = Depends(get_db)):
             face_coverage=c.face_coverage or 0.0,
             virality_reason=c.virality_reason,
             is_selected=c.is_selected,
+            seo_titles=list(c.seo_titles or []) or None,
+            seo_description=c.seo_description,
+            seo_tags=list(c.seo_tags or []) or None,
+            seo_hashtags=list(c.seo_hashtags or []) or None,
             created_at=c.created_at.isoformat() if c.created_at else ""
         )
         for c in clips
